@@ -1,0 +1,20 @@
+{
+    "name": "Davinci C++ Helper Env",
+    "build": {
+        "dockerfile": "../Dockerfile"
+    },
+
+    // --- 这是我们最终的解决方案！ ---
+    "postCreateCommand": "apt-get update && apt-get install -y g++-mingw-w64-x86-64-posix",
+
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "ms-vscode.cpptools-extension-pack",
+                "ms-azuretools.vscode-docker",
+                "eamodio.gitlens"
+            ]
+        }
+    },
+    "remoteUser": "root"
+}

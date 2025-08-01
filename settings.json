@@ -1,0 +1,12 @@
+{
+  "env": {
+    "ANTHROPIC_AUTH_TOKEN": "sk-JLbPl30uAnaM3h8yV5miLKRsyR8lyXU2q6qE7K3JLaBHgKHW",
+    "ANTHROPIC_BASE_URL": "https://sg.instcopilot-api.com",
+    "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "32000",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"
+  },
+  "permissions": {
+    "allow": [],
+    "deny": []
+  }
+}

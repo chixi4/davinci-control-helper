@@ -1,0 +1,12 @@
+{
+  "enabled": true,
+  "left_mouse_id": "\\\\?\\HID#{00001812-0000-1000-8000-00805f9b34fb}_Dev_VID&02047d_PID&80d4_REV&6701_d659ebc655ec#9&23d231c9&0&0000#{378de44c-56ef-11d1-bc8c-00a0c91405dd}",
+  "right_mouse_id": "\\\\?\\HID#VID_1532&PID_00B4&MI_00#7&1a4c5aa2&0&0000#{378de44c-56ef-11d1-bc8c-00a0c91405dd}",
+  "drag_speed": 1,
+  "idle_timeout": 20,
+  "debug_log": false,
+  "default_mouse_speed": 10,
+  "speed_check_interval": 0.5,
+  "target_process": "Resolve.exe",
+  "direction_correction": true
+}

@@ -1,0 +1,4 @@
+pywin32>=307
+keyboard>=0.13.5
+PyAutoGUI>=0.9.54
+pyinstaller>=6.0.0
