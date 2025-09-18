@@ -36,6 +36,8 @@ msbuild .\dual-sens-manager\dual-sens-manager.csproj /m /p:Configuration=Release
 - 若 Rebuild 失败，请先退出正在运行的 `DualSensManager.exe`
 
 ## 许可与致谢
-- 本工具包含基于 RAWINPUT/C++/CLI 的封装与改造；感谢社区相关项目的思路启发
-- 如需补充第三方依赖许可（例如 Json.NET），请在本段追加
+- 本项目采用 MIT License，详见 [LICENSE](./LICENSE)
+- 第三方依赖与来源：详见 [THIRD-PARTY-NOTICES.md](./THIRD-PARTY-NOTICES.md)
+  - Raw Accel (MIT) — 提供 RAWINPUT/加速相关实现参考与封装思路
+  - Newtonsoft.Json (MIT) — JSON 序列化/反序列化
 
