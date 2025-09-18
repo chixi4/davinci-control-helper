@@ -1,4 +1,4 @@
-﻿name: build
+name: build
 on:
   push:
     branches: [ v1, main ]
@@ -9,6 +9,8 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
       - name: Restore
         run: .\nuget.exe restore .\dual-sens-manager\dual-sens-manager.csproj
       - name: Build
