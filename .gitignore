@@ -1,0 +1,43 @@
+﻿# IDE
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Build outputs
+bin/
+obj/
+**/x64/
+**/ARM64/
+Debug/
+Release/
+**/Debug/
+**/Release/
+
+# MSVC/C++ intermediates
+*.obj
+*.iobj
+*.ipdb
+*.pdb
+*.idb
+*.ilk
+*.tlog/
+*.pch
+*.opendb
+*.cachefile
+
+# Logs
+*.log
+[Ll]og*/
+
+# Test results
+TestResult*/
+*.trx
+
+# Post-build artifacts
+wrapper/signed/
+
+# NuGet packages (kept tracked in this repo)
+# If you decide to not track packages, uncomment next line
+# packages/
