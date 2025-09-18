@@ -1,0 +1,8 @@
+E:\dev\davinci-control-helper\rawaccel-1.7.1\wrapper\x64\Release\Newtonsoft.Json.dll
+E:\dev\davinci-control-helper\rawaccel-1.7.1\wrapper\x64\Release\Newtonsoft.Json.xml
+E:\dev\davinci-control-helper\rawaccel-1.7.1\wrapper\wrapper\x64\Release\wrapper.vcxproj.AssemblyReference.cache
+E:\dev\davinci-control-helper\rawaccel-1.7.1\wrapper\wrapper\x64\Release\wrapper.vcxproj.Up2Date
+E:\dev\dual-sens-manager-src\wrapper\x64\Release\Newtonsoft.Json.dll
+E:\dev\dual-sens-manager-src\wrapper\x64\Release\Newtonsoft.Json.xml
+E:\dev\dual-sens-manager-src\wrapper\wrapper\x64\Release\wrapper.vcxproj.AssemblyReference.cache
+E:\dev\dual-sens-manager-src\wrapper\wrapper\x64\Release\wrapper.vcxproj.Up2Date
