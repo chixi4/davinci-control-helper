@@ -1,0 +1,15 @@
+  - 文件：E:\dev\dual-sens-manager-src\dual-sens-manager\dual-sens-manager.csproj:13
+      - Debug|x64 / Release|x64 / Debug|ARM64 / Release|ARM64 的
+          - <OutputPath>$(ProjectDir)..\$(Platform)\$(Configuration)\</OutputPath>
+
+  编译与产物
+
+  - 打开 Developer Command Prompt for VS 2022（cmd，不是 PowerShell）
+  - 执行：
+      - E:
+      - cd E:\dev\dual-sens-manager-src
+      - ".\nuget.exe" restore ".\dual-sens-manager\dual-sens-manager.csproj" 仅首次需要
+      - msbuild ".\dual-sens-manager\dual-sens-manager.csproj" /m /p:Configuration=Release /p:Platform=x64
+  - 产物：
+      - E:\dev\dual-sens-manager-src\x64\Release\DualSensManager.exe
+      - 结构即扁平到仓库根目录下的 x64\Release

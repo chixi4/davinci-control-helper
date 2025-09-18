@@ -1,0 +1,9 @@
+E:\dev\davinci-control-helper\rawaccel-1.7.1\dual-sens-manager\obj\x64\Debug\dual-sens-manager.csproj.AssemblyReference.cache
+E:\dev\davinci-control-helper\rawaccel-1.7.1\dual-sens-manager\obj\x64\Debug\dual-sens-manager.csproj.CoreCompileInputs.cache
+E:\dev\davinci-control-helper\rawaccel-1.7.1\x64\Debug\DualSensManager.exe.config
+E:\dev\davinci-control-helper\rawaccel-1.7.1\x64\Debug\DualSensManager.exe
+E:\dev\davinci-control-helper\rawaccel-1.7.1\x64\Debug\DualSensManager.pdb
+E:\dev\davinci-control-helper\rawaccel-1.7.1\dual-sens-manager\obj\x64\Debug\dual-sen.661D7FAD.Up2Date
+E:\dev\davinci-control-helper\rawaccel-1.7.1\dual-sens-manager\obj\x64\Debug\DualSensManager.exe
+E:\dev\davinci-control-helper\rawaccel-1.7.1\dual-sens-manager\obj\x64\Debug\DualSensManager.pdb
+E:\dev\davinci-control-helper\rawaccel-1.7.1\dual-sens-manager\obj\x64\Debug\DualSensManager.exe.config

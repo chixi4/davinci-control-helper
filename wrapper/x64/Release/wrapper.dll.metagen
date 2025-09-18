@@ -1,0 +1,223 @@
+ImageRuntimeVersion: v4.0.30319
+Assembly wrapper, Version=1.7.*, Culture=固定语言(固定国家/地区): 
+	hash=SHA1, flags=PublicKey
+Assembly mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089: 
+	hash=None, flags=None
+Assembly Newtonsoft.Json, Version=13.0.0.0, Culture=neutral, PublicKeyToken=30ad4fe6b2a6aeed: 
+	hash=None, flags=None
+Assembly System, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089: 
+	hash=None, flags=None
+Class RawInputDevice: AutoLayout, AnsiClass, Class, Public, SequentialLayout, UnicodeClass, BeforeFieldInit
+    Void .ctor(): PrivateScope, Public, HideBySig, SpecialName, RTSpecialName
+  Fields:
+    IntPtr handle : Public
+    System.String name : Public, HasFieldMarshal
+    System.String id : Public, HasFieldMarshal
+Class RawInputSource: AutoLayout, AnsiClass, Class, Public, BeforeFieldInit
+    Void .ctor(): PrivateScope, Public, HideBySig, SpecialName, RTSpecialName
+  Interfaces:
+    System.IDisposable
+  Events:
+    System.Action DeviceListChanged: SpecialName
+    System.Action`3[System.IntPtr,System.Int32,System.Int32] DeviceMoved: SpecialName
+  Methods:
+    HandleMessage(HWND__*, UInt32, UInt64, Int64): PrivateScope, Public, HideBySig
+    add_DeviceMoved(Action`3): PrivateScope, Public, HideBySig, SpecialName
+    remove_DeviceMoved(Action`3): PrivateScope, Public, HideBySig, SpecialName
+    add_DeviceListChanged(Action): PrivateScope, Public, HideBySig, SpecialName
+    remove_DeviceListChanged(Action): PrivateScope, Public, HideBySig, SpecialName
+    Start(): PrivateScope, Public, HideBySig
+    Stop(): PrivateScope, Public, HideBySig
+    Dispose(): PrivateScope, Public, Final, Virtual, HideBySig
+Class MultiHandleDevice: AutoLayout, AnsiClass, Class, Public, BeforeFieldInit
+  Fields:
+    System.String name : Public
+    System.String id : Public
+    System.Collections.Generic.List`1[System.IntPtr] handles : Public
+  Methods:
+    GetList(): PrivateScope, Public, Static, HideBySig
+Class MultiHandleDevice+ListMaker: AutoLayout, AnsiClass, Class, NestedPublic, BeforeFieldInit
+  Methods:
+    MakeList(): PrivateScope, Public, Static, HideBySig
+Class InteropException: AutoLayout, AnsiClass, Class, Public, BeforeFieldInit
+  :System.Exception
+    Void .ctor(std.exception*): PrivateScope, Public, HideBySig, SpecialName, RTSpecialName
+    Void .ctor(SByte*): PrivateScope, Public, HideBySig, SpecialName, RTSpecialName
+    Void .ctor(System.String): PrivateScope, Public, HideBySig, SpecialName, RTSpecialName
+Class VersionHelper: AutoLayout, AnsiClass, Class, Public, BeforeFieldInit
+    Void .ctor(): PrivateScope, Public, HideBySig, SpecialName, RTSpecialName
+  Fields:
+    System.String VersionString = 1.7.0 : Public, Static, Literal, HasDefault
+  Methods:
+    ValidOrThrow(): PrivateScope, Public, Static, HideBySig
+Struct Vec2`1[T]: AutoLayout, AnsiClass, Class, Public, SequentialLayout, Sealed, BeforeFieldInit
+  Type parameter: T
+  :System.ValueType
+  Fields:
+    T x : Public
+    T y : Public
+Struct AccelArgs: AutoLayout, AnsiClass, Class, Public, SequentialLayout, Sealed, BeforeFieldInit
+  :System.ValueType
+  Fields:
+    AccelMode mode : Public
+    Boolean gain : Public, HasFieldMarshal
+    Double inputOffset : Public
+    Double outputOffset : Public
+    Double acceleration : Public
+    Double decayRate : Public
+    Double gamma : Public
+    Double motivity : Public
+    Double exponentClassic : Public
+    Double scale : Public
+    Double exponentPower : Public
+    Double limit : Public
+    Double syncSpeed : Public
+    Double smooth : Public
+    Vec2`1[System.Double] cap : Public
+    CapMode capMode : Public
+    Int32 length : Public
+    Single[] data : Public, HasFieldMarshal
+    Int32 MaxLutPoints = 257 : Public, Static, Literal, HasDefault
+  Methods:
+    OnDeserializedMethod(StreamingContext): PrivateScope, Public, HideBySig
+    IsEquivalentTo(AccelArgs): PrivateScope, Public, HideBySig
+Struct SpeedArgs: AutoLayout, AnsiClass, Class, Public, SequentialLayout, Sealed, BeforeFieldInit
+  :System.ValueType
+  Fields:
+    Boolean combineMagnitudes : Public, HasFieldMarshal
+    Double lpNorm : Public
+    Double inputSmoothHalflife : Public
+    Double scaleSmoothHalflife : Public
+    Double outputSmoothHalflife : Public
+Class Profile: AutoLayout, AnsiClass, Class, Public, SequentialLayout, UnicodeClass, BeforeFieldInit
+    Void .ctor(): PrivateScope, Public, HideBySig, SpecialName, RTSpecialName
+    Void .ctor(rawaccel.profile*): PrivateScope, Public, HideBySig, SpecialName, RTSpecialName
+  Fields:
+    System.String name : Public, HasFieldMarshal
+    Vec2`1[System.Double] domainXY : Public
+    Vec2`1[System.Double] rangeXY : Public
+    AccelArgs argsX : Public
+    AccelArgs argsY : Public
+    SpeedArgs inputSpeedArgs : Public
+    Double outputDPI : Public
+    Double yxOutputDPIRatio : Public
+    Double lrOutputDPIRatio : Public
+    Double udOutputDPIRatio : Public
+    Double rotation : Public
+    Double snap : Public
+    Double minimumSpeed : Public
+    Double maximumSpeed : Public
+Struct DeviceConfig: AutoLayout, AnsiClass, Class, Public, SequentialLayout, Sealed, BeforeFieldInit
+  :System.ValueType
+  Fields:
+    Boolean disable : Public, HasFieldMarshal
+    Boolean setExtraInfo : Public, HasFieldMarshal
+    Boolean pollTimeLock : Public, HasFieldMarshal
+    Int32 dpi : Public
+    Int32 pollingRate : Public
+    Double minimumTime : Public
+    Double maximumTime : Public
+  Methods:
+    ShouldSerializesetExtraInfo(): PrivateScope, Public, HideBySig
+    ShouldSerializeminimumTime(): PrivateScope, Public, HideBySig
+    ShouldSerializemaximumTime(): PrivateScope, Public, HideBySig
+    Init(device_config* IsImplicitlyDereferenced): PrivateScope, Public, HideBySig
+Class DeviceSettings: AutoLayout, AnsiClass, Class, Public, SequentialLayout, UnicodeClass, BeforeFieldInit
+    Void .ctor(): PrivateScope, Public, HideBySig, SpecialName, RTSpecialName
+    Void .ctor(rawaccel.device_settings*): PrivateScope, Public, HideBySig, SpecialName, RTSpecialName
+  Fields:
+    System.String name : Public, HasFieldMarshal
+    System.String profile : Public, HasFieldMarshal
+    System.String id : Public, HasFieldMarshal
+    DeviceConfig config : Public
+Class ProfileErrors: AutoLayout, AnsiClass, Class, Public, BeforeFieldInit
+    Void .ctor(System.Collections.Generic.List`1[Profile]): PrivateScope, Public, HideBySig, SpecialName, RTSpecialName
+  Fields:
+    System.Collections.Generic.List`1[ProfileErrors+SingleProfileErrors] list : Public
+  Methods:
+    Empty(): PrivateScope, Public, HideBySig
+    ToString(): PrivateScope, Public, Virtual, HideBySig
+Class ProfileErrors+SingleProfileErrors: AutoLayout, AnsiClass, Class, NestedPublic, BeforeFieldInit
+    Void .ctor(): PrivateScope, Public, HideBySig, SpecialName, RTSpecialName
+  Fields:
+    Profile prof : Public
+    System.String[] messages : Public
+    Int32 lastX : Public
+    Int32 lastY : Public
+Class DeviceErrors: AutoLayout, AnsiClass, Class, Public, BeforeFieldInit
+    Void .ctor(System.Collections.Generic.List`1[DeviceSettings]): PrivateScope, Public, HideBySig, SpecialName, RTSpecialName
+  Fields:
+    System.Collections.Generic.List`1[DeviceErrors+SingleDeviceErrors] list : Public
+  Methods:
+    Empty(): PrivateScope, Public, HideBySig
+    ToString(): PrivateScope, Public, Virtual, HideBySig
+Class DeviceErrors+SingleDeviceErrors: AutoLayout, AnsiClass, Class, NestedPublic, BeforeFieldInit
+    Void .ctor(): PrivateScope, Public, HideBySig, SpecialName, RTSpecialName
+  Fields:
+    DeviceSettings settings : Public
+    System.String[] messages : Public
+Class ManagedAccel: AutoLayout, AnsiClass, Class, Public, BeforeFieldInit
+    Void .ctor(Profile): PrivateScope, Public, HideBySig, SpecialName, RTSpecialName
+    Void .ctor(rawaccel.modifier_settings*): PrivateScope, Public, HideBySig, SpecialName, RTSpecialName
+    Void .ctor(): PrivateScope, Public, HideBySig, SpecialName, RTSpecialName
+  Interfaces:
+    System.IDisposable
+  Properties:
+    Profile Settings 'get set' : 
+  Methods:
+    CreateStatelessCopy(): PrivateScope, Public, HideBySig
+    Accelerate(Int32, Int32, Double, Double): PrivateScope, Public, HideBySig
+    get_Settings(): PrivateScope, Public, HideBySig, SpecialName
+    set_Settings(Profile): PrivateScope, Public, HideBySig, SpecialName
+    NativeSettings(modifier_settings*): PrivateScope, Public, HideBySig
+    Dispose(): PrivateScope, Public, Final, Virtual, HideBySig
+Class SpeedCalculatorArgs: AutoLayout, AnsiClass, Class, Public, BeforeFieldInit
+    Void .ctor(Double, Double, Double, Double): PrivateScope, Public, HideBySig, SpecialName, RTSpecialName
+    Void .ctor(): PrivateScope, Public, HideBySig, SpecialName, RTSpecialName
+  Fields:
+    rawaccel.speed_args* speed_args IsConst IsConst : Public
+Class SpeedCalculator: AutoLayout, AnsiClass, Class, Public, BeforeFieldInit
+    Void .ctor(): PrivateScope, Public, HideBySig, SpecialName, RTSpecialName
+  Methods:
+    Init(SpeedCalculatorArgs): PrivateScope, Public, HideBySig
+    CalculateSpeed(Double, Double, Double): PrivateScope, Public, HideBySig
+    SmoothScale(Double, Double): PrivateScope, Public, HideBySig
+    SmoothOutput(Double, Double): PrivateScope, Public, HideBySig
+Class DriverConfig: AutoLayout, AnsiClass, Class, Public, BeforeFieldInit
+  Fields:
+    System.String version : Public
+    DeviceConfig defaultDeviceConfig : Public
+    System.Collections.Generic.List`1[Profile] profiles : Public
+    System.Collections.Generic.List`1[ManagedAccel] accels : Public, NotSerialized
+    System.Collections.Generic.List`1[DeviceSettings] devices : Public
+    Double WriteDelayMs = 1000 : Public, Static, Literal, HasDefault
+    System.String Key = Driver settings : Public, Static, Literal, HasDefault
+  Methods:
+    Activate(): PrivateScope, Public, HideBySig
+    SetProfileAt(Int32, Profile): PrivateScope, Public, HideBySig
+    Errors(): PrivateScope, Public, HideBySig
+    ToJObject(): PrivateScope, Public, HideBySig
+    ToJSON(): PrivateScope, Public, HideBySig
+    Convert(String): PrivateScope, Public, Static, HideBySig
+    GetActive(): PrivateScope, Public, Static, HideBySig
+    FromProfile(Profile): PrivateScope, Public, Static, HideBySig
+    GetDefault(): PrivateScope, Public, Static, HideBySig
+    Deactivate(): PrivateScope, Public, Static, HideBySig
+Struct AccelMode: AutoLayout, AnsiClass, Class, Public, Sealed, BeforeFieldInit
+  :System.Enum
+  Fields:
+    Int32 value__ : Public, SpecialName, RTSpecialName
+    AccelMode classic = 0 : Public, Static, Literal, HasDefault
+    AccelMode jump = 1 : Public, Static, Literal, HasDefault
+    AccelMode natural = 2 : Public, Static, Literal, HasDefault
+    AccelMode synchronous = 3 : Public, Static, Literal, HasDefault
+    AccelMode power = 4 : Public, Static, Literal, HasDefault
+    AccelMode lut = 5 : Public, Static, Literal, HasDefault
+    AccelMode noaccel = 6 : Public, Static, Literal, HasDefault
+Struct CapMode: AutoLayout, AnsiClass, Class, Public, Sealed, BeforeFieldInit
+  :System.Enum
+  Fields:
+    Int32 value__ : Public, SpecialName, RTSpecialName
+    CapMode in_out = 0 : Public, Static, Literal, HasDefault
+    CapMode input = 1 : Public, Static, Literal, HasDefault
+    CapMode output = 2 : Public, Static, Literal, HasDefault
