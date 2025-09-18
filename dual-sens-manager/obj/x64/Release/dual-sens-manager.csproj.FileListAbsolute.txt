@@ -29,3 +29,4 @@ E:\dev\dual-sens-manager-src\dual-sens-manager\obj\x64\Release\DualSensManager.p
 E:\dev\dual-sens-manager-src\x64\Release\DualSensManager.exe.config
 E:\dev\dual-sens-manager-src\x64\Release\DualSensManager.exe
 E:\dev\dual-sens-manager-src\x64\Release\DualSensManager.pdb
+E:\dev\dual-sens-manager-src\dual-sens-manager\obj\x64\Release\DualSensManager.exe.config
