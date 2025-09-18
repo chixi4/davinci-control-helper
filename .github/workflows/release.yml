@@ -1,0 +1,51 @@
+name: release
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '手动发布版本号（例如 1.2.3）'
+        required: false
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+      - name: Restore
+        run: .\nuget.exe restore .\dual-sens-manager\dual-sens-manager.csproj
+      - name: Build (x64 Release)
+        run: msbuild .\dual-sens-manager\dual-sens-manager.csproj /m /p:Configuration=Release /p:Platform=x64
+      - name: Package outputs
+        shell: pwsh
+        run: |
+          $configuration = 'Release'
+          & .\scripts\pack-release.ps1 -Configuration $configuration
+
+          $ver = '${{ github.event.inputs.version }}'
+          if ([string]::IsNullOrWhiteSpace($ver)) { $ver = '${{ github.ref_name }}' }
+
+          $zipSource = "DualSensManager-$configuration.zip"
+          if (-not (Test-Path $zipSource)) { throw "未生成 $zipSource" }
+
+          $zipTarget = "DualSensManager-$ver.zip"
+          Move-Item -Path $zipSource -Destination $zipTarget -Force
+
+          $exeSource = Join-Path (Join-Path 'x64' $configuration) 'DualSensManager.exe'
+          if (-not (Test-Path $exeSource)) { throw "未找到 $exeSource" }
+
+          Copy-Item -Path $exeSource -Destination ("DualSensManager-" + $ver + ".exe") -Force
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            DualSensManager-${{ github.event.inputs.version || github.ref_name }}.zip
+            DualSensManager-${{ github.event.inputs.version || github.ref_name }}.exe
+          generate_release_notes: true
+          tag_name: ${{ github.event.inputs.version && format('v{0}', github.event.inputs.version) || github.ref_name }}
+          target_commitish: ${{ github.sha }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
