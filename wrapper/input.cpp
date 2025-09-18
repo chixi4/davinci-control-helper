@@ -33,25 +33,36 @@ public:
     {
         if (msg == WM_INPUT)
         {
-            UINT size = 0;
-            if (GetRawInputData((HRAWINPUT)lParam, RID_INPUT, NULL, &size, sizeof(RAWINPUTHEADER)) != 0 || size == 0)
+            // 复用缓冲，WndProc 专用线程，使用静态缓冲安全
+            static std::vector<BYTE> s_buf;
+            if (s_buf.empty()) s_buf.resize(256);
+
+            UINT cap = (UINT)s_buf.size();
+            UINT read = cap;
+            UINT ret = GetRawInputData((HRAWINPUT)lParam, RID_INPUT, s_buf.data(), &read, sizeof(RAWINPUTHEADER));
+
+            if (ret == (UINT)-1 || read > cap)
             {
-                return DefWindowProcW(hWnd, msg, wParam, lParam);
+                // 缓冲不足或失败：查询所需大小并重试
+                UINT need = 0;
+                if (GetRawInputData((HRAWINPUT)lParam, RID_INPUT, NULL, &need, sizeof(RAWINPUTHEADER)) != 0 || need == 0)
+                {
+                    return 0;
+                }
+                if (s_buf.size() < need) s_buf.resize(need);
+                read = need;
+                ret = GetRawInputData((HRAWINPUT)lParam, RID_INPUT, s_buf.data(), &read, sizeof(RAWINPUTHEADER));
+                if (ret == (UINT)-1 || read == 0) return 0;
             }
 
-            std::vector<BYTE> buf(size);
-            if (GetRawInputData((HRAWINPUT)lParam, RID_INPUT, buf.data(), &size, sizeof(RAWINPUTHEADER)) == size)
+            RAWINPUT* raw = reinterpret_cast<RAWINPUT*>(s_buf.data());
+            if (raw->header.dwType == RIM_TYPEMOUSE)
             {
-                RAWINPUT* raw = reinterpret_cast<RAWINPUT*>(buf.data());
-                if (raw->header.dwType == RIM_TYPEMOUSE)
+                int dx = raw->data.mouse.lLastX;
+                int dy = raw->data.mouse.lLastY;
+                if (dx != 0 || dy != 0)
                 {
-                    int dx = raw->data.mouse.lLastX;
-                    int dy = raw->data.mouse.lLastY;
-                    if (dx != 0 || dy != 0)
-                    {
-                        // 类内可直接触发事件
-                        DeviceMoved(System::IntPtr(raw->header.hDevice), dx, dy);
-                    }
+                    DeviceMoved(System::IntPtr(raw->header.hDevice), dx, dy);
                 }
             }
             return 0;
@@ -67,6 +78,10 @@ public:
 private:
     void MessageLoop()
     {
+        // 提升优先级以减少调度抖动（谨慎使用极端等级）
+        SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
+        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+
         WNDCLASSEXW wc = {};
         wc.cbSize = sizeof(wc);
         wc.lpfnWndProc = &RawInputSource_WndProc;
