@@ -1,4 +1,4 @@
-﻿# DualSensManager
+﻿[![build](https://github.com/chixi4/davinci-control-helper/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/chixi4/davinci-control-helper/actions/workflows/build.yml) \r\n# DualSensManager
 
 一个面向双鼠标的低延迟灵敏度管理小工具：识别左右手鼠标（HID），为左/右分配独立 Profile，并提供“移动即按压”的极低延迟链路。支持参数记忆与退出恢复默认。
 
@@ -40,4 +40,5 @@ msbuild .\dual-sens-manager\dual-sens-manager.csproj /m /p:Configuration=Release
 - 第三方依赖与来源：详见 [THIRD-PARTY-NOTICES.md](./THIRD-PARTY-NOTICES.md)
   - Raw Accel (MIT) — 提供 RAWINPUT/加速相关实现参考与封装思路
   - Newtonsoft.Json (MIT) — JSON 序列化/反序列化
+
 
