@@ -68,10 +68,13 @@ jobs:
           $sevenZipDownloader = Join-Path $sevenZipDir '7zr.exe'
           Invoke-WebRequest -Uri 'https://www.7-zip.org/a/7zr.exe' -OutFile $sevenZipDownloader
 
-          $extraArchive = Join-Path $sevenZipDir '7z-extra.7z'
+          $extraArchive = Join-Path $sevenZipDir '7z2407-extra.7z'
           Invoke-WebRequest -Uri 'https://www.7-zip.org/a/7z2407-extra.7z' -OutFile $extraArchive
-
           & $sevenZipDownloader x $extraArchive ("-o$sevenZipDir") -y | Out-Null
+
+          $installerArchive = Join-Path $sevenZipDir '7z2407-x64.exe'
+          Invoke-WebRequest -Uri 'https://www.7-zip.org/a/7z2407-x64.exe' -OutFile $installerArchive
+          & $sevenZipDownloader x $installerArchive ("-o$sevenZipDir") -y | Out-Null
 
           $sevenZip = Join-Path $sevenZipDir '7za.exe'
           if (-not (Test-Path $sevenZip)) { throw "未找到 7za.exe" }
@@ -85,12 +88,12 @@ jobs:
 
           $configPath = 'sfx-config.txt'
           $configLines = @(
-            ';!@Install@!UTF-8!'
-            'Title="DualSensManager Portable"'
-            'InstallPath="%TEMP%\DualSensManagerPortable"'
-            'RunProgram="DualSensManager.exe"'
-            'GUIMode="2"'
-            'OverwriteMode="2"'
+            ';!@Install@!UTF-8!',
+            'Title="DualSensManager Portable"',
+            'InstallPath="%TEMP%\DualSensManagerPortable"',
+            'RunProgram="DualSensManager.exe"',
+            'GUIMode="2"',
+            'OverwriteMode="2"',
             ';!@InstallEnd@!'
           )
           $configLines | Set-Content -Path $configPath -Encoding UTF8
