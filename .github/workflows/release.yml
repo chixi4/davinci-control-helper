@@ -37,16 +37,45 @@ jobs:
           $zipTarget = "DualSensManager-$ver.zip"
           Move-Item -Path $zipSource -Destination $zipTarget -Force
 
-          $exeSource = Join-Path (Join-Path 'x64' $configuration) 'DualSensManager.exe'
-          if (-not (Test-Path $exeSource)) { throw "未找到 $exeSource" }
+          $sevenZipCandidates = @(
+            (Join-Path $env:ProgramFiles '7-Zip\7z.exe'),
+            (Join-Path ${env:ProgramFiles(x86)} '7-Zip\7z.exe')
+          )
+          $sevenZip = $sevenZipCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $sevenZip) { throw "未找到 7-Zip (7z.exe)" }
 
-          Copy-Item -Path $exeSource -Destination ("DualSensManager-" + $ver + ".exe") -Force
+          $portableArchive = "DualSensManager-$ver-portable.7z"
+          & $sevenZip a -t7z $portableArchive .\out\* -mx=9 | Out-Null
+
+          $configPath = 'sfx-config.txt'
+          @"
+;!@Install@!UTF-8!
+Title="DualSensManager Portable"
+InstallPath="%TEMP%\DualSensManagerPortable"
+RunProgram="DualSensManager.exe"
+GUIMode="2"
+OverwriteMode="2"
+;!@InstallEnd@!
+"@ | Set-Content -Path $configPath -Encoding UTF8
+
+          $sfxCandidates = @(
+            (Join-Path $env:ProgramFiles '7-Zip\7zsd.sfx'),
+            (Join-Path ${env:ProgramFiles(x86)} '7-Zip\7zsd.sfx')
+          )
+          $sfxModule = $sfxCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $sfxModule) { throw "未找到 7zsd.sfx" }
+
+          $portableExe = "DualSensManager-" + $ver + "-portable.exe"
+          $copyCommand = [string]::Format('copy /b "{0}" + "{1}" + "{2}" "{3}"', $sfxModule, $configPath, $portableArchive, $portableExe)
+          cmd /c $copyCommand | Out-Null
+
+          Remove-Item $configPath, $portableArchive -Force
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
             DualSensManager-${{ github.event.inputs.version || github.ref_name }}.zip
-            DualSensManager-${{ github.event.inputs.version || github.ref_name }}.exe
+            DualSensManager-${{ github.event.inputs.version || github.ref_name }}-portable.exe
           generate_release_notes: true
           tag_name: ${{ github.event.inputs.version && format('v{0}', github.event.inputs.version) || github.ref_name }}
           target_commitish: ${{ github.sha }}
