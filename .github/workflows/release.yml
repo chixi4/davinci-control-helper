@@ -48,15 +48,16 @@ jobs:
           & $sevenZip a -t7z $portableArchive .\out\* -mx=9 | Out-Null
 
           $configPath = 'sfx-config.txt'
-          @"
-;!@Install@!UTF-8!
-Title="DualSensManager Portable"
-InstallPath="%TEMP%\DualSensManagerPortable"
-RunProgram="DualSensManager.exe"
-GUIMode="2"
-OverwriteMode="2"
-;!@InstallEnd@!
-"@ | Set-Content -Path $configPath -Encoding UTF8
+          $configLines = @(
+            ';!@Install@!UTF-8!'
+            'Title="DualSensManager Portable"'
+            'InstallPath="%TEMP%\DualSensManagerPortable"'
+            'RunProgram="DualSensManager.exe"'
+            'GUIMode="2"'
+            'OverwriteMode="2"'
+            ';!@InstallEnd@!'
+          )
+          $configLines | Set-Content -Path $configPath -Encoding UTF8
 
           $sfxCandidates = @(
             (Join-Path $env:ProgramFiles '7-Zip\7zsd.sfx'),
