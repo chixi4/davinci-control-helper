@@ -42,9 +42,10 @@ jobs:
           Move-Item -Path $zipSource -Destination $zipTarget -Force
 
           $releaseDir = Join-Path (Get-Location) 'x64\Release'
-          $stagePath = Join-Path (Get-Location) 'portable-stage'
-          if (Test-Path $stagePath) { Remove-Item $stagePath -Recurse -Force }
-          New-Item -ItemType Directory -Path $stagePath | Out-Null
+          $stageRoot = Join-Path (Get-Location) 'portable-stage'
+          $bundleDir = Join-Path $stageRoot 'DualSensManagerPortable'
+          if (Test-Path $stageRoot) { Remove-Item $stageRoot -Recurse -Force }
+          New-Item -ItemType Directory -Path $bundleDir | Out-Null
 
           $stageFiles = @(
             'DualSensManager.exe',
@@ -57,7 +58,7 @@ jobs:
           foreach ($file in $stageFiles) {
             $sourcePath = Join-Path $releaseDir $file
             if (Test-Path $sourcePath) {
-              Copy-Item -Path $sourcePath -Destination $stagePath -Force
+              Copy-Item -Path $sourcePath -Destination (Join-Path $bundleDir $file) -Force
             }
           }
 
@@ -83,15 +84,15 @@ jobs:
           if (-not (Test-Path $sfxModule)) { throw "未找到 7z.sfx" }
 
           $portableArchive = "DualSensManager-$ver-portable.7z"
-          $stageWildcard = Join-Path $stagePath '*'
+          $stageWildcard = Join-Path $stageRoot '*'
           & $sevenZip a -t7z $portableArchive $stageWildcard -mx=9 | Out-Null
 
           $configPath = 'sfx-config.txt'
           $configLines = @(
             ';!@Install@!UTF-8!',
             'Title="DualSensManager Portable"',
-            'InstallPath="%TEMP%\DualSensManagerPortable"',
-            'RunProgram="DualSensManager.exe"',
+            'InstallPath="%USERPROFILE%\AppData\Local\DualSensManagerPortable"',
+            'RunProgram="DualSensManagerPortable\\DualSensManager.exe"',
             'GUIMode="2"',
             'OverwriteMode="2"',
             ';!@InstallEnd@!'
@@ -103,7 +104,7 @@ jobs:
           cmd /c $copyCommand | Out-Null
 
           Remove-Item $configPath, $portableArchive -Force
-          Remove-Item $stagePath -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item $stageRoot -Recurse -Force -ErrorAction SilentlyContinue
           Remove-Item $sevenZipDir -Recurse -Force -ErrorAction SilentlyContinue
 
       - name: Create GitHub Release
