@@ -16,12 +16,16 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
+
       - name: Restore
         run: .\nuget.exe restore .\dual-sens-manager\dual-sens-manager.csproj
+
       - name: Build (x64 Release)
         run: msbuild .\dual-sens-manager\dual-sens-manager.csproj /m /p:Configuration=Release /p:Platform=x64
+
       - name: Package outputs
         shell: pwsh
         run: |
@@ -37,15 +41,47 @@ jobs:
           $zipTarget = "DualSensManager-$ver.zip"
           Move-Item -Path $zipSource -Destination $zipTarget -Force
 
-          $sevenZipCandidates = @(
-            (Join-Path $env:ProgramFiles '7-Zip\7z.exe'),
-            (Join-Path ${env:ProgramFiles(x86)} '7-Zip\7z.exe')
+          $releaseDir = Join-Path (Get-Location) 'x64\Release'
+          $stagePath = Join-Path (Get-Location) 'portable-stage'
+          if (Test-Path $stagePath) { Remove-Item $stagePath -Recurse -Force }
+          New-Item -ItemType Directory -Path $stagePath | Out-Null
+
+          $stageFiles = @(
+            'DualSensManager.exe',
+            'DualSensManager.exe.config',
+            'wrapper.dll',
+            'wrapper.pdb',
+            'Newtonsoft.Json.dll',
+            'Newtonsoft.Json.xml'
           )
-          $sevenZip = $sevenZipCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
-          if (-not $sevenZip) { throw "未找到 7-Zip (7z.exe)" }
+          foreach ($file in $stageFiles) {
+            $sourcePath = Join-Path $releaseDir $file
+            if (Test-Path $sourcePath) {
+              Copy-Item -Path $sourcePath -Destination $stagePath -Force
+            }
+          }
+
+          $sevenZipDir = Join-Path $env:RUNNER_TEMP 'sevenzip'
+          if (Test-Path $sevenZipDir) { Remove-Item $sevenZipDir -Recurse -Force }
+          New-Item -ItemType Directory -Path $sevenZipDir | Out-Null
+
+          $sevenZipDownloader = Join-Path $sevenZipDir '7zr.exe'
+          Invoke-WebRequest -Uri 'https://www.7-zip.org/a/7zr.exe' -OutFile $sevenZipDownloader
+
+          $extraArchive = Join-Path $sevenZipDir '7z-extra.7z'
+          Invoke-WebRequest -Uri 'https://www.7-zip.org/a/7z2407-extra.7z' -OutFile $extraArchive
+
+          & $sevenZipDownloader x $extraArchive ("-o$sevenZipDir") -y | Out-Null
+
+          $sevenZip = Join-Path $sevenZipDir '7za.exe'
+          if (-not (Test-Path $sevenZip)) { throw "未找到 7za.exe" }
+
+          $sfxModule = Join-Path $sevenZipDir '7z.sfx'
+          if (-not (Test-Path $sfxModule)) { throw "未找到 7z.sfx" }
 
           $portableArchive = "DualSensManager-$ver-portable.7z"
-          & $sevenZip a -t7z $portableArchive .\out\* -mx=9 | Out-Null
+          $stageWildcard = Join-Path $stagePath '*'
+          & $sevenZip a -t7z $portableArchive $stageWildcard -mx=9 | Out-Null
 
           $configPath = 'sfx-config.txt'
           $configLines = @(
@@ -59,18 +95,14 @@ jobs:
           )
           $configLines | Set-Content -Path $configPath -Encoding UTF8
 
-          $sfxCandidates = @(
-            (Join-Path $env:ProgramFiles '7-Zip\7zsd.sfx'),
-            (Join-Path ${env:ProgramFiles(x86)} '7-Zip\7zsd.sfx')
-          )
-          $sfxModule = $sfxCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
-          if (-not $sfxModule) { throw "未找到 7zsd.sfx" }
-
           $portableExe = "DualSensManager-" + $ver + "-portable.exe"
-          $copyCommand = [string]::Format('copy /b "{0}" + "{1}" + "{2}" "{3}"', $sfxModule, $configPath, $portableArchive, $portableExe)
+          $copyCommand = "copy /b `"$sfxModule`" + `"$configPath`" + `"$portableArchive`" `"$portableExe`""
           cmd /c $copyCommand | Out-Null
 
           Remove-Item $configPath, $portableArchive -Force
+          Remove-Item $stagePath -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item $sevenZipDir -Recurse -Force -ErrorAction SilentlyContinue
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
