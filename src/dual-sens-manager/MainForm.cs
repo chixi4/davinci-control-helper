@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Globalization;
@@ -284,6 +284,13 @@ namespace DualSensManager
             // 进入检测前先确保设备列表是最新的
             ReloadDevices(false);
             selectionState.BeginDetection(target);
+            selectionState.ClearTarget(target);
+            UpdateDeviceLabels();
+            UpdateApplyButtonState();
+            if (autoPressToggle.Checked)
+            {
+                UpdateHandleSets();
+            }
 
             // 仅进入等待确认态：不再因移动直接注册
             confirmClickDeviceHandle = IntPtr.Zero;
@@ -615,6 +622,26 @@ namespace DualSensManager
             }
 
             var name = string.IsNullOrWhiteSpace(device.name) ? device.id : device.name;
+            if (side == DetectionTarget.Left && !string.IsNullOrEmpty(selectionState.RightDeviceId) && string.Equals(selectionState.RightDeviceId, device.id, StringComparison.OrdinalIgnoreCase))
+            {
+                selectionState.ClearTarget(DetectionTarget.Right);
+                UpdateDeviceLabels();
+                UpdateApplyButtonState();
+                if (autoPressToggle.Checked)
+                {
+                    UpdateHandleSets();
+                }
+            }
+            else if (side == DetectionTarget.Right && !string.IsNullOrEmpty(selectionState.LeftDeviceId) && string.Equals(selectionState.LeftDeviceId, device.id, StringComparison.OrdinalIgnoreCase))
+            {
+                selectionState.ClearTarget(DetectionTarget.Left);
+                UpdateDeviceLabels();
+                UpdateApplyButtonState();
+                if (autoPressToggle.Checked)
+                {
+                    UpdateHandleSets();
+                }
+            }
             if (selectionState.ApplyDetectionResult(device.id, name))
             {
                 statusLabel.Text = (side == DetectionTarget.Left) ? "已锁定左手鼠标。" : "已锁定右手鼠标。";
