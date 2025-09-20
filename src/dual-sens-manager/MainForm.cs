@@ -16,6 +16,9 @@ namespace DualSensManager
         private Dictionary<IntPtr, MultiHandleDevice> handleMap = new Dictionary<IntPtr, MultiHandleDevice>();
         private double rightMultiplier = 1.0;
         private RawInputSource rawInputSource;
+        private readonly LowLevelMouseBlocker mouseBlocker;
+        private volatile bool blockRightInput = false;
+        private bool mouseBlockerStarted = false;
         private readonly object autoPressGate = new object();
         private bool autoPressPressed = false;
         private HashSet<long> leftHandleSet = new HashSet<long>();
@@ -41,6 +44,7 @@ namespace DualSensManager
 
         public MainForm()
         {
+            mouseBlocker = new LowLevelMouseBlocker(() => blockRightInput);
             Text = "双鼠标灵敏度管理";
             StartPosition = FormStartPosition.CenterScreen;
             MinimumSize = new Size(600, 320);
@@ -339,18 +343,33 @@ namespace DualSensManager
             if (autoPressToggle != null && autoPressToggle.Checked && selectionState.HasBothDevices)
             {
                 var key = deviceHandle.ToInt64();
+                var leftHit = false;
                 lock (autoPressGate)
                 {
-                    if ((leftHandleSet.Count > 0 && leftHandleSet.Contains(key)) && !autoPressPressed)
+                    var leftMatches = leftHandleSet.Count > 0 && leftHandleSet.Contains(key);
+                    var rightMatches = rightHandleSet.Count > 0 && rightHandleSet.Contains(key);
+
+                    if (leftMatches)
                     {
-                        SendLeftDown();
-                        autoPressPressed = true;
+                        if (!autoPressPressed)
+                        {
+                            SendLeftDown();
+                            autoPressPressed = true;
+                        }
+                        blockRightInput = true;
+                        leftHit = true;
                     }
-                    else if ((rightHandleSet.Count > 0 && rightHandleSet.Contains(key)) && autoPressPressed)
+                    else if (rightMatches && autoPressPressed)
                     {
                         SendLeftUp();
                         autoPressPressed = false;
+                        blockRightInput = false;
                     }
+                }
+
+                if (leftHit && blockRightInput && mouseBlockerStarted && (deltaX != 0 || deltaY != 0))
+                {
+                    SendRelativeMove(deltaX, deltaY);
                 }
             }
         }
@@ -366,9 +385,12 @@ namespace DualSensManager
                         SendLeftUp();
                         autoPressPressed = false;
                     }
+                    blockRightInput = false;
                 }
             }
             catch { /* ignore */ }
+            try { mouseBlocker.Dispose(); } catch { /* ignore */ }
+            mouseBlockerStarted = false;
             try { if (rawInputSource != null) rawInputSource.Stop(); } catch { /* ignore */ }
         }
 
@@ -473,6 +495,22 @@ namespace DualSensManager
             return value.ToString("0.###", CultureInfo.InvariantCulture);
         }
 
+        private bool StartMouseBlockerIfNeeded()
+        {
+            if (mouseBlockerStarted)
+            {
+                return true;
+            }
+
+            if (mouseBlocker.Start())
+            {
+                mouseBlockerStarted = true;
+                return true;
+            }
+
+            return false;
+        }
+
         private void ToggleAutoPress()
         {
             if (autoPressToggle.Checked)
@@ -483,8 +521,16 @@ namespace DualSensManager
                     MessageBox.Show(this, "请先完成左右手鼠标检测", "提示", MessageBoxButtons.OK, MessageBoxIcon.Information);
                     return;
                 }
+
                 UpdateHandleSets();
-                statusLabel.Text = "已开启移动即按压。";
+                if (StartMouseBlockerIfNeeded())
+                {
+                    statusLabel.Text = "已开启移动即按压。";
+                }
+                else
+                {
+                    statusLabel.Text = "已开启移动即按压（右手屏蔽不可用）。";
+                }
             }
             else
             {
@@ -495,7 +541,11 @@ namespace DualSensManager
                         SendLeftUp();
                         autoPressPressed = false;
                     }
+                    blockRightInput = false;
                 }
+
+                mouseBlocker.Stop();
+                mouseBlockerStarted = false;
                 statusLabel.Text = "已关闭移动即按压。";
             }
         }
@@ -601,11 +651,33 @@ namespace DualSensManager
         }
 
         private const uint INPUT_MOUSE = 0;
+        private const uint MOUSEEVENTF_MOVE = 0x0001;
         private const uint MOUSEEVENTF_LEFTDOWN = 0x0002;
         private const uint MOUSEEVENTF_LEFTUP = 0x0004;
 
         [DllImport("user32.dll", SetLastError = true)]
         private static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
+
+        private static void SendRelativeMove(int dx, int dy)
+        {
+            if (dx == 0 && dy == 0)
+            {
+                return;
+            }
+
+            var input = new INPUT
+            {
+                type = INPUT_MOUSE,
+                mi = new MOUSEINPUT
+                {
+                    dx = dx,
+                    dy = dy,
+                    dwFlags = MOUSEEVENTF_MOVE
+                }
+            };
+
+            SendInput(1, new[] { input }, Marshal.SizeOf(typeof(INPUT)));
+        }
 
         private static void SendLeftDown()
         {
