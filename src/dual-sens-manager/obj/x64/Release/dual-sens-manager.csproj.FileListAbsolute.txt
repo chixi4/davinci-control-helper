@@ -1,0 +1,6 @@
+E:\dev\mouse-control-helper\src\dual-sens-manager\obj\x64\Release\dual-sens-manager.csprojResolveAssemblyReference.cache
+E:\dev\mouse-control-helper\x64\Release\DualSensManager.exe.config
+E:\dev\mouse-control-helper\x64\Release\DualSensManager.exe
+E:\dev\mouse-control-helper\x64\Release\DualSensManager.pdb
+E:\dev\mouse-control-helper\src\dual-sens-manager\obj\x64\Release\DualSensManager.exe
+E:\dev\mouse-control-helper\src\dual-sens-manager\obj\x64\Release\DualSensManager.pdb
