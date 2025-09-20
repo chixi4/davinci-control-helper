@@ -1,0 +1,35 @@
+﻿name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Prepare artifact zip
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag = $env:GITHUB_REF_NAME
+          if (-not (Test-Path 'x64/Release')) { throw 'x64/Release 目录不存在，无法打包发布产物。' }
+          $zip = "x64/Release/davinci-control-helper-$tag-win-x64.zip"
+          if (Test-Path $zip) { Remove-Item $zip -Force }
+          Compress-Archive -Path 'x64/Release/*' -DestinationPath $zip -Force
+          Get-ChildItem 'x64/Release' | Out-Host
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+          files: |
+            x64/Release/davinci-control-helper-${{ github.ref_name }}-win-x64.zip
