@@ -57,6 +57,7 @@
   <ItemGroup>
     <Compile Include="Program.cs" />
     <Compile Include="MainForm.cs" />
+    <Compile Include="LowLevelMouseBlocker.cs" />
     <Compile Include="RawInputInterop.cs" />
     <Compile Include="SettingsService.cs" />
     <Compile Include="DeviceSelectionState.cs" />
