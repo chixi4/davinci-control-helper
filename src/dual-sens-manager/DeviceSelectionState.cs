@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 
 namespace DualSensManager
 {
@@ -55,6 +55,21 @@ namespace DualSensManager
 
             CurrentTarget = DetectionTarget.None;
             return true;
+        }
+
+
+        public void ClearTarget(DetectionTarget target)
+        {
+            if (target == DetectionTarget.Left)
+            {
+                LeftDeviceId = string.Empty;
+                LeftDeviceName = string.Empty;
+            }
+            else if (target == DetectionTarget.Right)
+            {
+                RightDeviceId = string.Empty;
+                RightDeviceName = string.Empty;
+            }
         }
 
         public bool HasBothDevices
