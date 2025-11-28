@@ -1,0 +1,42 @@
+{
+  "profiles": [
+    {
+      "name": "Default",
+      "Output DPI": 1000,
+      "Y/X output DPI ratio (vertical sens multiplier)": 1.0,
+      "L/R output DPI ratio (left sens multiplier)": 1.0,
+      "U/D output DPI ratio (up sens multiplier)": 1.0,
+      "Degrees of rotation": 0.0,
+      "Degrees of angle snapping": 0.0,
+      "Input speed calculation parameters": {
+        "Whole vs By Component": true,
+        "Lp norm": 2.0
+      },
+      "X curve": {
+        "Mode": "off",
+        "Speed cap type": "output",
+        "Gain": true,
+        "Acceleration": 0.0
+      },
+      "Y curve": {
+        "Mode": "off",
+        "Speed cap type": "output",
+        "Gain": true,
+        "Acceleration": 0.0
+      },
+      "Domain X weight": 1.0,
+      "Domain Y weight": 1.0,
+      "Range X weight": 1.0,
+      "Range Y weight": 1.0,
+      "Speed min": 0.0,
+      "Speed max": 0.0
+    }
+  ],
+  "Device settings": {
+    "disable": false,
+    "setExtraInfo": true,
+    "DPI (normalizes input speed unit: counts/ms -> in/s)": 0,
+    "Polling rate Hz (keep at 0 for automatic adjustment)": 0
+  },
+  "devices": []
+}
