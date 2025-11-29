@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls:*)",
+      "Bash(find:*)",
+      "mcp__codex__codex",
+      "Bash(g++:*)",
+      "Bash(codex:*)",
+      "Bash(where:*)",
+      "Bash(pip show:*)",
+      "Bash(findstr:*)",
+      "Bash(cat:*)",
+      "Bash(claude mcp list:*)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(uvx --from git+https://github.com/GuDaStudio/codexmcp.git python -c \"import codexmcp; print(codexmcp.__file__)\")",
+      "Bash(python:*)",
+      "Bash(dir:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
