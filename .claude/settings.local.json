@@ -15,7 +15,10 @@
       "WebFetch(domain:raw.githubusercontent.com)",
       "Bash(uvx --from git+https://github.com/GuDaStudio/codexmcp.git python -c \"import codexmcp; print(codexmcp.__file__)\")",
       "Bash(python:*)",
-      "Bash(dir:*)"
+      "Bash(dir:*)",
+      "Bash(cd:*)",
+      "Bash(xargs ls:*)",
+      "Bash(head:*)"
     ],
     "deny": [],
     "ask": []
