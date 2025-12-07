@@ -18,7 +18,9 @@
       "Bash(dir:*)",
       "Bash(cd:*)",
       "Bash(xargs ls:*)",
-      "Bash(head:*)"
+      "Bash(head:*)",
+      "Bash(cl /EHsc /O2:*)",
+      "Bash(powershell.exe -Command:*)"
     ],
     "deny": [],
     "ask": []

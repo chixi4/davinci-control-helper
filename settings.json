@@ -160,6 +160,18 @@
         "DPI (normalizes input speed unit: counts/ms -> in/s)": 0,
         "Polling rate Hz (keep at 0 for automatic adjustment)": 0
       }
+    },
+    {
+      "name": "Registered Mouse",
+      "profile": "sens_registered_mouse",
+      "id": "HID\\{00001812-0000-1000-8000-00805f9b34fb}_Dev_VID&02047d_PID&80d4_REV&6701_d659ebc655ec",
+      "config": {
+        "disable": false,
+        "setExtraInfo": true,
+        "Use constant time interval based on polling rate": false,
+        "DPI (normalizes input speed unit: counts/ms -> in/s)": 0,
+        "Polling rate Hz (keep at 0 for automatic adjustment)": 0
+      }
     }
   ]
 }

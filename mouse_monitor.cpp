@@ -25,28 +25,45 @@
 #include <cctype>
 #include <cerrno>
 #include <cstdlib>
+#include <atomic>
+#include <cmath>
 
 // ========== 全局变量 ==========
 HWND g_hWnd = NULL;
-bool g_running = true;
-bool g_featureEnabled = false;
-bool g_isMouseDown = false;
-DWORD g_lastMoveTime = 0;
+
+// 状态机定义
+enum class LockState { IDLE, LOCKED, UNLOCKABLE };
+
+// 线程安全的原子变量
+std::atomic<bool> g_running(true);
+std::atomic<bool> g_featureEnabled(false);
+std::atomic<bool> g_isMouseDown(false);
+std::atomic<DWORD> g_lastRegisteredMoveTime(0);  // 注册鼠标最后移动时间
+std::atomic<DWORD> g_cooldownUntil(0);           // 冷却期结束时间
+std::atomic<LockState> g_lockState(LockState::IDLE);
+std::atomic<bool> g_otherMouseActive(false);     // 其他鼠标是否活跃
+
 LONG g_moveCount = 0;
 short g_lastRawX = 0;
 short g_lastRawY = 0;
-bool g_extraInfoValid = false;  // ExtraInformation 是否有效
+std::atomic<bool> g_extraInfoValid(false);  // ExtraInformation 是否有效
 
 // 设备注册相关
-volatile HANDLE g_registeredDevice = NULL;    // 已注册的鼠标设备句柄
-volatile HANDLE g_pendingDevice = NULL;       // 待确认的设备句柄
-volatile bool g_registrationMode = true;      // 是否处于注册模式
-wchar_t g_pendingDevicePath[512];             // 待确认设备的 HID 路径
-wchar_t g_registeredDevicePath[512];          // 已注册设备的 HID 路径
-std::string g_registeredHardwareId;           // RawAccel 格式的硬件ID
-double g_currentSensitivity = 1.0;            // 当前灵敏度倍数
+std::atomic<HANDLE> g_registeredDevice(nullptr);
+std::atomic<HANDLE> g_pendingDevice(nullptr);
+std::atomic<bool> g_registrationMode(true);
+wchar_t g_pendingDevicePath[512];
+wchar_t g_registeredDevicePath[512];
+std::string g_registeredHardwareId;
+double g_currentSensitivity = 1.0;
 
-const DWORD STOP_THRESHOLD_MS = 150;  // 停止移动的阈值（毫秒）
+// 低级鼠标钩子
+HHOOK g_mouseHook = NULL;
+std::atomic<bool> g_blockingMouse(false);  // 是否正在阻止鼠标移动
+
+// 常量
+const DWORD STOP_TO_UNLOCK_MS = 50;     // 停止后进入 UNLOCKABLE 的阈值
+const LONG DEADZONE_THRESHOLD = 3;      // 其他鼠标死区阈值 |dx|+|dy|
 const char* SETTINGS_FILE = "settings.json";
 const char* SENS_PROFILE_NAME = "sens_registered_mouse";
 
@@ -66,6 +83,18 @@ void HandleSensitivityInput();
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 DWORD WINAPI MessageLoopThread(LPVOID lpParam);
 
+// 新增函数声明
+bool IsOtherMouseMovementSignificant(LONG dx, LONG dy);
+void MoveCursorBy(LONG dx, LONG dy);
+DWORD GetCooldownDuration();
+void EnterLockedState();
+void EnterUnlockableState();
+void ReleaseToIdle();
+LRESULT CALLBACK LowLevelMouseProc(int nCode, WPARAM wParam, LPARAM lParam);
+bool InstallMouseHook();
+void UninstallMouseHook();
+void FailsafeCleanup();
+
 // 模拟鼠标左键按下
 void MouseLeftDown() {
     INPUT input = {};
@@ -80,6 +109,117 @@ void MouseLeftUp() {
     input.type = INPUT_MOUSE;
     input.mi.dwFlags = MOUSEEVENTF_LEFTUP;
     SendInput(1, &input, sizeof(INPUT));
+}
+
+// ========== 状态机辅助函数 ==========
+
+// 判断其他鼠标的移动是否超过死区（用于过滤抖动）
+bool IsOtherMouseMovementSignificant(LONG dx, LONG dy) {
+    return (std::abs(dx) + std::abs(dy)) >= DEADZONE_THRESHOLD;
+}
+
+// 手动移动光标（用于注册鼠标控制光标）
+void MoveCursorBy(LONG dx, LONG dy) {
+    if (dx == 0 && dy == 0) return;
+
+    POINT pt;
+    if (!GetCursorPos(&pt)) return;
+
+    pt.x += dx;
+    pt.y += dy;
+    SetCursorPos(pt.x, pt.y);
+}
+
+// 获取冷却期时长（使用系统双击时间）
+DWORD GetCooldownDuration() {
+    DWORD cooldown = GetDoubleClickTime();
+    if (cooldown == 0) cooldown = 500;
+    return cooldown;
+}
+
+// 进入 LOCKED 状态：按下左键，开始阻止其他鼠标
+void EnterLockedState() {
+    if (!g_isMouseDown.load()) {
+        MouseLeftDown();
+        g_isMouseDown.store(true);
+    }
+    g_lastRegisteredMoveTime.store(GetTickCount());
+    g_lockState.store(LockState::LOCKED);
+    g_blockingMouse.store(true);
+}
+
+// 进入 UNLOCKABLE 状态：等待其他鼠标移动来触发释放
+void EnterUnlockableState() {
+    if (g_lockState.load() == LockState::LOCKED) {
+        g_lockState.store(LockState::UNLOCKABLE);
+    }
+}
+
+// 释放到 IDLE 状态：抬起左键，停止阻止，设置冷却期
+void ReleaseToIdle() {
+    if (g_isMouseDown.exchange(false)) {
+        MouseLeftUp();
+    }
+    g_lockState.store(LockState::IDLE);
+    g_blockingMouse.store(false);
+    g_cooldownUntil.store(GetTickCount() + GetCooldownDuration());
+}
+
+// 安全清理：确保程序退出时不会留下按住的左键
+void FailsafeCleanup() {
+    if (g_isMouseDown.exchange(false)) {
+        MouseLeftUp();
+    }
+    g_blockingMouse.store(false);
+    g_lockState.store(LockState::IDLE);
+    UninstallMouseHook();
+}
+
+// ========== 低级鼠标钩子 ==========
+
+// 低级鼠标钩子回调：阻止物理鼠标移动，放行注入事件
+LRESULT CALLBACK LowLevelMouseProc(int nCode, WPARAM wParam, LPARAM lParam) {
+    if (nCode < 0) {
+        return CallNextHookEx(NULL, nCode, wParam, lParam);
+    }
+
+    // 只处理鼠标移动事件
+    if (wParam != WM_MOUSEMOVE) {
+        return CallNextHookEx(NULL, nCode, wParam, lParam);
+    }
+
+    // 如果没有启用阻止，直接放行
+    if (!g_blockingMouse.load()) {
+        return CallNextHookEx(NULL, nCode, wParam, lParam);
+    }
+
+    const MSLLHOOKSTRUCT* info = reinterpret_cast<const MSLLHOOKSTRUCT*>(lParam);
+    if (!info) {
+        return CallNextHookEx(NULL, nCode, wParam, lParam);
+    }
+
+    // 放行注入的事件（包括我们的 SetCursorPos）
+    if (info->flags & LLMHF_INJECTED) {
+        return CallNextHookEx(NULL, nCode, wParam, lParam);
+    }
+
+    // 阻止物理鼠标的移动
+    return 1;
+}
+
+// 安装低级鼠标钩子
+bool InstallMouseHook() {
+    if (g_mouseHook != NULL) return true;
+    g_mouseHook = SetWindowsHookEx(WH_MOUSE_LL, LowLevelMouseProc, GetModuleHandle(NULL), 0);
+    return g_mouseHook != NULL;
+}
+
+// 卸载低级鼠标钩子
+void UninstallMouseHook() {
+    if (g_mouseHook) {
+        UnhookWindowsHookEx(g_mouseHook);
+        g_mouseHook = NULL;
+    }
 }
 
 // 解码 ExtraInformation 获取原始移动量
@@ -553,7 +693,7 @@ bool RunWriterExe() {
 
 // 处理灵敏度输入
 void HandleSensitivityInput() {
-    if (g_registeredDevice == NULL) {
+    if (g_registeredDevice.load() == NULL) {
         printf("\n[WARN] No mouse registered. Please register a mouse first.\n");
         return;
     }
@@ -642,13 +782,13 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
                 if (raw->header.dwType == RIM_TYPEMOUSE) {
                     HANDLE deviceHandle = raw->header.hDevice;
+                    bool isRegistrationMode = g_registrationMode.load();
 
                     // 注册模式：检测移动的鼠标并显示设备信息
-                    if (g_registrationMode) {
-                        // 只有当移动量不为零时才触发检测
+                    if (isRegistrationMode) {
                         bool hasMovement = (raw->data.mouse.lLastX != 0 || raw->data.mouse.lLastY != 0);
-                        if (hasMovement && deviceHandle != g_pendingDevice) {
-                            g_pendingDevice = deviceHandle;
+                        if (hasMovement && deviceHandle != g_pendingDevice.load()) {
+                            g_pendingDevice.store(deviceHandle);
                             GetDeviceHidPath(deviceHandle, g_pendingDevicePath, sizeof(g_pendingDevicePath)/sizeof(wchar_t));
 
                             printf("\r                                                                              \r");
@@ -660,60 +800,97 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                             fflush(stdout);
                         }
                     }
-                    // 正常模式：只响应已注册的设备
-                    else if (g_registeredDevice != NULL && deviceHandle != g_registeredDevice) {
-                        // 忽略未注册设备的移动，不做任何处理
-                    }
+                    // 正常模式
                     else {
-                        // 检查是否是相对移动（不是绝对定位）
+                        HANDLE registeredDevice = g_registeredDevice.load();
                         bool isRelative = !(raw->data.mouse.usFlags & MOUSE_MOVE_ABSOLUTE);
 
-                        if (isRelative) {
-                            // 加速处理后的移动量
-                            LONG accelX = raw->data.mouse.lLastX;
-                            LONG accelY = raw->data.mouse.lLastY;
+                        // 其他鼠标的移动
+                        if (registeredDevice != NULL && deviceHandle != registeredDevice) {
+                            if (isRelative) {
+                                LONG otherX = raw->data.mouse.lLastX;
+                                LONG otherY = raw->data.mouse.lLastY;
 
-                            // 从 ExtraInformation 解码原始移动量
-                            ULONG extraInfo = raw->data.mouse.ulExtraInformation;
-                            short rawX = 0, rawY = 0;
-                            DecodeExtraInfo(extraInfo, &rawX, &rawY);
+                                // 记录其他鼠标是否活跃（超过死区）
+                                if (IsOtherMouseMovementSignificant(otherX, otherY)) {
+                                    g_otherMouseActive.store(true);
 
-                            // 检测 ExtraInformation 是否有效
-                            // 如果 extraInfo 非零且与加速后数据不同，说明 setExtraInfo 已启用
-                            if (extraInfo != 0 && (rawX != 0 || rawY != 0)) {
-                                g_extraInfoValid = true;
-                                g_lastRawX = rawX;
-                                g_lastRawY = rawY;
-                            }
-
-                            // 检测是否有移动（使用原始数据或加速后数据）
-                            bool hasMoved = false;
-                            if (g_extraInfoValid) {
-                                hasMoved = (rawX != 0 || rawY != 0);
-                            } else {
-                                hasMoved = (accelX != 0 || accelY != 0);
-                            }
-
-                            if (hasMoved) {
-                                g_moveCount++;
-                                g_lastMoveTime = GetTickCount();
-
-                                // 显示移动信息
-                                if (g_extraInfoValid) {
-                                    printf("\r[RAW] X: %+5d  Y: %+5d  | Accel: (%+5ld, %+5ld) | Count: %ld  | %s    ",
-                                           rawX, rawY, accelX, accelY, g_moveCount,
-                                           g_featureEnabled ? "ON " : "OFF");
-                                } else {
-                                    printf("\r[ACCEL] X: %+5ld  Y: %+5ld  | Count: %ld  | %s  (setExtraInfo disabled)    ",
-                                           accelX, accelY, g_moveCount,
-                                           g_featureEnabled ? "ON " : "OFF");
+                                    // 在 UNLOCKABLE 状态下，其他鼠标移动触发释放
+                                    if (g_lockState.load() == LockState::UNLOCKABLE) {
+                                        ReleaseToIdle();
+                                    }
                                 }
-                                fflush(stdout);
+                            }
+                        }
+                        // 注册鼠标的移动
+                        else if (registeredDevice != NULL && deviceHandle == registeredDevice) {
+                            if (isRelative) {
+                                LONG accelX = raw->data.mouse.lLastX;
+                                LONG accelY = raw->data.mouse.lLastY;
 
-                                // 自动左键功能
-                                if (g_featureEnabled && !g_isMouseDown) {
-                                    MouseLeftDown();
-                                    g_isMouseDown = true;
+                                // 从 ExtraInformation 解码原始移动量
+                                ULONG extraInfo = raw->data.mouse.ulExtraInformation;
+                                short rawX = 0, rawY = 0;
+                                DecodeExtraInfo(extraInfo, &rawX, &rawY);
+
+                                // 更新 extraInfoValid 状态（修复永不重置的 bug）
+                                if (extraInfo != 0 && (rawX != 0 || rawY != 0)) {
+                                    g_extraInfoValid.store(true);
+                                    g_lastRawX = rawX;
+                                    g_lastRawY = rawY;
+                                } else if (extraInfo == 0) {
+                                    g_extraInfoValid.store(false);
+                                }
+
+                                // 判断是否有实际移动
+                                bool hasMoved = false;
+                                if (g_extraInfoValid.load()) {
+                                    hasMoved = (rawX != 0 || rawY != 0);
+                                } else {
+                                    hasMoved = (accelX != 0 || accelY != 0);
+                                }
+
+                                if (hasMoved) {
+                                    g_moveCount++;
+                                    DWORD now = GetTickCount();
+                                    bool featureEnabled = g_featureEnabled.load();
+                                    LockState currentState = g_lockState.load();
+                                    DWORD cooldownUntil = g_cooldownUntil.load();
+
+                                    // 显示移动信息
+                                    const char* stateStr = "IDLE";
+                                    if (currentState == LockState::LOCKED) stateStr = "LOCK";
+                                    else if (currentState == LockState::UNLOCKABLE) stateStr = "UNLK";
+
+                                    if (g_extraInfoValid.load()) {
+                                        printf("\r[RAW] X:%+4d Y:%+4d | Accel:(%+4ld,%+4ld) | %s | %s    ",
+                                               rawX, rawY, accelX, accelY,
+                                               featureEnabled ? "ON " : "OFF", stateStr);
+                                    } else {
+                                        printf("\r[ACCEL] X:%+4ld Y:%+4ld | %s | %s (no extraInfo)    ",
+                                               accelX, accelY,
+                                               featureEnabled ? "ON " : "OFF", stateStr);
+                                    }
+                                    fflush(stdout);
+
+                                    // 状态机逻辑
+                                    if (featureEnabled) {
+                                        if (currentState == LockState::IDLE) {
+                                            // 检查冷却期
+                                            if (now >= cooldownUntil) {
+                                                EnterLockedState();
+                                            }
+                                        } else if (currentState == LockState::LOCKED || currentState == LockState::UNLOCKABLE) {
+                                            // 注册鼠标继续移动，保持/回到 LOCKED 状态
+                                            g_lastRegisteredMoveTime.store(now);
+                                            if (currentState == LockState::UNLOCKABLE) {
+                                                g_lockState.store(LockState::LOCKED);
+                                            }
+                                        }
+
+                                        // 手动移动光标（使用加速后的数据）
+                                        MoveCursorBy(accelX, accelY);
+                                    }
                                 }
                             }
                         }
@@ -772,13 +949,21 @@ DWORD WINAPI MessageLoopThread(LPVOID lpParam) {
 
     printf("[OK] Raw Input registered\n");
 
+    // 安装低级鼠标钩子
+    if (!InstallMouseHook()) {
+        printf("[WARN] Failed to install mouse hook: %lu (feature will work without blocking)\n", GetLastError());
+    } else {
+        printf("[OK] Low-level mouse hook installed\n");
+    }
+
     // 消息循环
     MSG msg;
-    while (g_running && GetMessage(&msg, NULL, 0, 0)) {
+    while (g_running.load() && GetMessage(&msg, NULL, 0, 0)) {
         TranslateMessage(&msg);
         DispatchMessage(&msg);
     }
 
+    UninstallMouseHook();
     DestroyWindow(g_hWnd);
     return 0;
 }
@@ -822,42 +1007,42 @@ int main() {
 
     // 主循环
     bool lastCapsState = (GetKeyState(VK_CAPITAL) & 0x0001) != 0;
+    g_featureEnabled.store(lastCapsState);
 
-    while (g_running) {
+    while (g_running.load()) {
         // 检查按键
         if (_kbhit()) {
             char ch = _getch();
 
             // 退出键
             if (ch == 'q' || ch == 'Q') {
-                if (g_isMouseDown) {
-                    MouseLeftUp();
-                }
-                g_running = false;
+                FailsafeCleanup();
+                g_running.store(false);
                 break;
             }
 
             // 灵敏度调整键（L）- 在非注册模式下可用
-            if ((ch == 'l' || ch == 'L') && !g_registrationMode) {
+            if ((ch == 'l' || ch == 'L') && !g_registrationMode.load()) {
                 HandleSensitivityInput();
                 continue;
             }
 
             // 注册模式下的按键处理
-            if (g_registrationMode) {
-                if ((ch == 'y' || ch == 'Y') && g_pendingDevice != NULL) {
+            if (g_registrationMode.load()) {
+                HANDLE pending = g_pendingDevice.load();
+                if ((ch == 'y' || ch == 'Y') && pending != NULL) {
                     // 确认注册当前检测到的设备
-                    g_registeredDevice = g_pendingDevice;
-                    g_registrationMode = false;
+                    g_registeredDevice.store(pending);
+                    g_registrationMode.store(false);
 
                     // 保存设备路径并转换为硬件ID
                     if (g_pendingDevicePath[0] == L'\0') {
-                        GetDeviceHidPath(g_pendingDevice, g_pendingDevicePath, sizeof(g_pendingDevicePath)/sizeof(wchar_t));
+                        GetDeviceHidPath(pending, g_pendingDevicePath, sizeof(g_pendingDevicePath)/sizeof(wchar_t));
                     }
                     wcscpy_s(g_registeredDevicePath, g_pendingDevicePath);
                     g_registeredHardwareId = DevicePathToHardwareId(g_registeredDevicePath);
 
-                    printf("\n[OK] Mouse registered: 0x%p\n", g_registeredDevice);
+                    printf("\n[OK] Mouse registered: 0x%p\n", pending);
                     if (g_registeredDevicePath[0] != L'\0') {
                         wprintf(L"[PATH] %ls\n", g_registeredDevicePath);
                     }
@@ -870,7 +1055,7 @@ int main() {
                     fflush(stdout);
                 } else if (ch == 'n' || ch == 'N') {
                     // 跳过当前设备，继续检测
-                    g_pendingDevice = NULL;
+                    g_pendingDevice.store(NULL);
                     g_pendingDevicePath[0] = L'\0';
                     printf("\n[REGISTER] Skipped. Move another mouse...\n\n");
                     fflush(stdout);
@@ -880,7 +1065,7 @@ int main() {
         }
 
         // 注册模式下只处理按键，跳过其他逻辑
-        if (g_registrationMode) {
+        if (g_registrationMode.load()) {
             Sleep(10);
             continue;
         }
@@ -889,30 +1074,35 @@ int main() {
         bool currentCapsState = (GetKeyState(VK_CAPITAL) & 0x0001) != 0;
         if (currentCapsState != lastCapsState) {
             lastCapsState = currentCapsState;
-            g_featureEnabled = currentCapsState;
+            g_featureEnabled.store(currentCapsState);
 
-            if (g_featureEnabled) {
+            if (currentCapsState) {
                 printf("\n[AUTO-CLICK] ENABLED\n");
             } else {
-                if (g_isMouseDown) {
-                    MouseLeftUp();
-                    g_isMouseDown = false;
-                }
+                // 功能关闭时释放
+                ReleaseToIdle();
                 printf("\n[AUTO-CLICK] DISABLED\n");
             }
         }
 
-        // 检查是否需要松开鼠标（停止移动超过阈值）
-        if (g_featureEnabled && g_isMouseDown) {
-            DWORD currentTime = GetTickCount();
-            if (currentTime - g_lastMoveTime > STOP_THRESHOLD_MS) {
-                MouseLeftUp();
-                g_isMouseDown = false;
+        // 状态机：检查是否需要从 LOCKED 转换到 UNLOCKABLE
+        LockState currentState = g_lockState.load();
+        if (currentState == LockState::LOCKED) {
+            DWORD lastMove = g_lastRegisteredMoveTime.load();
+            DWORD now = GetTickCount();
+            if (lastMove != 0 && (now - lastMove) >= STOP_TO_UNLOCK_MS) {
+                EnterUnlockableState();
             }
         }
 
+        // 重置其他鼠标活跃标志（用于下一轮检测）
+        g_otherMouseActive.store(false);
+
         Sleep(1);
     }
+
+    // 确保清理
+    FailsafeCleanup();
 
     // 停止消息循环
     if (g_hWnd) {
