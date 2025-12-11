@@ -1,0 +1,529 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { Mouse, Crosshair, RefreshCw, Minus, X, Loader2 } from 'lucide-react';
+import { motion, AnimatePresence } from 'framer-motion';
+
+// --- 配置：定义窗口大小 ---
+// [修改] 调整为紧凑型尺寸 (360x460)
+const WINDOW_WIDTH = 360;
+const WINDOW_HEIGHT = 460;
+
+// --- 工具：生成随机粒子 ---
+const generateParticles = (count) => {
+  return Array.from({ length: count }).map((_, i) => ({
+    id: i,
+    x: Math.random() * WINDOW_WIDTH,
+    y: Math.random() * WINDOW_HEIGHT,
+    size: Math.random() * 2 + 1,
+    speed: Math.random() * 0.5 + 0.2,
+  }));
+};
+
+// --- 数学工具：双区线性映射 (Split Scale) ---
+const toSplitScale = (position) => {
+  if (position <= 50) {
+    return 0.01 + (position / 50) * (1.0 - 0.01);
+  } else {
+    return 1.0 + ((position - 50) / 50) * (5.0 - 1.0);
+  }
+};
+
+const fromSplitScale = (value) => {
+  if (value <= 1.0) {
+    return ((value - 0.01) / (1.0 - 0.01)) * 50;
+  } else {
+    return 50 + ((value - 1.0) / (5.0 - 1.0)) * 50;
+  }
+};
+
+export default function App() {
+  // --- 状态定义 ---
+  const [phase, setPhase] = useState('SCAN');
+  const [sensitivity, setSensitivity] = useState(1.0);
+  const [isSyncing, setIsSyncing] = useState(false);
+  
+  // [修改] 将 isCapsLockOn 重命名为 isCrosshairActive，表示完全由软件逻辑控制
+  const [isCrosshairActive, setIsCrosshairActive] = useState(false);
+  
+  // [新增] 鼠标功能状态机：OFF -> BOOTING -> ON -> SHUTTING_DOWN -> OFF
+  const [mouseStatus, setMouseStatus] = useState('OFF'); 
+  
+  const [isFiring, setIsFiring] = useState(false);
+  const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
+  const [shakeProgress, setShakeProgress] = useState(0);
+  
+  const fireTimer = useRef(null);
+  const lastMousePos = useRef(null);
+  const debounceTimer = useRef(null);
+  const isFirstRender = useRef(true);
+
+  // 启动序列 (仪表盘初始化时自动开启)
+  useEffect(() => {
+    if (phase === 'DASHBOARD') {
+      const bootTimer = setTimeout(() => {
+        // 初始自动启动直接进入 ON 状态，避免进界面就看到加载动画
+        setMouseStatus('ON');
+      }, 600);
+      return () => clearTimeout(bootTimer);
+    }
+  }, [phase]);
+
+  // 监听进度条是否跑满
+  useEffect(() => {
+    if (phase === 'SCAN' && shakeProgress >= 100) {
+      const timer = setTimeout(() => {
+        setPhase('DASHBOARD');
+      }, 400); // [修改] 改为 400ms (0.4秒)
+      return () => clearTimeout(timer);
+    }
+  }, [shakeProgress, phase]);
+
+  // 防抖同步
+  useEffect(() => {
+    if (isFirstRender.current) {
+      isFirstRender.current = false;
+      return;
+    }
+    setIsSyncing(true);
+    if (debounceTimer.current) clearTimeout(debounceTimer.current);
+    debounceTimer.current = setTimeout(() => {
+      setIsSyncing(false);
+    }, 1000);
+    return () => clearTimeout(debounceTimer.current);
+  }, [sensitivity]);
+
+  // 鼠标监听
+  useEffect(() => {
+    const handleMove = (e) => {
+      const current = { x: e.clientX, y: e.clientY };
+      setMousePos(current);
+
+      if (lastMousePos.current === null) {
+        lastMousePos.current = current;
+        return;
+      }
+
+      const dx = Math.abs(current.x - lastMousePos.current.x);
+      const dy = Math.abs(current.y - lastMousePos.current.y);
+      const dist = Math.sqrt(dx * dx + dy * dy);
+
+      if (phase === 'SCAN') {
+        if (dist > 5) {
+          setShakeProgress(prev => {
+            if (prev >= 100) return 100;
+            
+            const next = prev + (dist / 15); 
+            if (next >= 100) {
+              return 100;
+            }
+            return next;
+          });
+        }
+      }
+
+      // [修改] 使用 isCrosshairActive 替代 isCapsLockOn
+      if (phase === 'DASHBOARD' && isCrosshairActive) {
+         setIsFiring(false);
+         clearTimeout(fireTimer.current);
+         fireTimer.current = setTimeout(() => {
+            setIsFiring(true);
+         }, 100); 
+      }
+
+      lastMousePos.current = current;
+    };
+
+    window.addEventListener('mousemove', handleMove);
+    return () => {
+      window.removeEventListener('mousemove', handleMove);
+      clearTimeout(fireTimer.current);
+    };
+  }, [phase, isCrosshairActive]); // [修改] 依赖项改为 isCrosshairActive
+
+  // 快捷键监听
+  useEffect(() => {
+    const handleKey = (e) => {
+      // [修改] 删除了 CapsLock 的按键监听逻辑
+      // 完全移除了键盘控制按钮开关的功能
+      
+      if (phase === 'DASHBOARD' && e.key.toLowerCase() === 'r') {
+        setSensitivity(1.0);
+      }
+    };
+    
+    // [修复] 移除了 handleClick (mousedown 监听器)
+    // 之前这个监听器会在点击拉条时，强制将按钮状态同步为物理键盘状态(OFF)，导致意外关闭。
+    // 现在只通过键盘按键或UI点击来控制，避免冲突。
+
+    window.addEventListener('keydown', handleKey);
+    // window.addEventListener('mousedown', handleClick); // 已移除
+    return () => {
+      window.removeEventListener('keydown', handleKey);
+      // window.removeEventListener('mousedown', handleClick); // 已移除
+    };
+  }, [phase]); // [修改] 移除了 isCrosshairActive 依赖，因为不再需要在此处判断
+
+  const particles = useRef(generateParticles(20)); // 粒子数量减少一点以适应小窗口
+  const sliderPercent = fromSplitScale(sensitivity);
+
+  // [新增] 处理鼠标按钮点击
+  const handleMouseToggle = () => {
+    if (mouseStatus === 'OFF') {
+      // 开始启动流程
+      setMouseStatus('BOOTING');
+      // 模拟后端 1 秒开启
+      setTimeout(() => {
+        setMouseStatus('ON');
+      }, 1000);
+    } else if (mouseStatus === 'ON') {
+      // 开始关闭流程
+      setMouseStatus('SHUTTING_DOWN');
+      // 立即关闭依赖功能 (Crosshair)
+      setIsCrosshairActive(false);
+      setIsFiring(false);
+      // 模拟后端 1 秒关闭
+      setTimeout(() => {
+        setMouseStatus('OFF');
+      }, 1000);
+    }
+    // BOOTING 和 SHUTTING_DOWN 状态下点击无效
+  };
+
+  const isMouseActive = mouseStatus === 'ON'; // 保持对旧变量名的兼容，用于辉光显示
+  const isProcessing = mouseStatus === 'BOOTING' || mouseStatus === 'SHUTTING_DOWN';
+
+  return (
+    <div className="flex items-center justify-center w-full h-screen bg-gray-900/50">
+      
+      <div 
+        style={{ width: WINDOW_WIDTH, height: WINDOW_HEIGHT }}
+        className={`relative overflow-hidden bg-zinc-950 text-zinc-200 font-mono select-none transition-all duration-300 shadow-2xl rounded-xl border border-zinc-800
+          ${isFiring ? 'cursor-crosshair' : 'cursor-default'}
+        `}
+      >
+
+        {/* 拖拽条 */}
+        <div 
+          className="absolute top-0 left-0 w-full h-8 z-[100]"
+          style={{ WebkitAppRegion: 'drag' }} 
+        />
+
+        {/* [新增] 窗口控制按钮组 (最小化/关闭) */}
+        {/* z-[101] 确保在拖拽条之上 */}
+        {/* no-drag 确保按钮可以被点击，而不是触发拖拽 */}
+        <div 
+          className="absolute top-0 right-0 z-[101] flex p-2 gap-1"
+          style={{ WebkitAppRegion: 'no-drag' }}
+        >
+          {/* 最小化按钮 */}
+          <button 
+            className="group p-1.5 rounded hover:bg-zinc-800 transition-colors"
+            onClick={() => console.log("Minimize Clicked (Hook to Electron)")}
+            title="Minimize"
+          >
+            <Minus size={14} className="text-zinc-600 group-hover:text-zinc-200 transition-colors" />
+          </button>
+          
+          {/* 关闭按钮 */}
+          <button 
+            className="group p-1.5 rounded hover:bg-red-500/10 transition-colors"
+            onClick={() => console.log("Close Clicked (Hook to Electron)")}
+            title="Close"
+          >
+            <X size={14} className="text-zinc-600 group-hover:text-red-500 transition-colors" />
+          </button>
+        </div>
+        
+        {/* 状态边框 */}
+        <div 
+          className={`absolute inset-0 pointer-events-none z-50 border-[6px] transition-all duration-300 rounded-xl
+            ${phase === 'SCAN' ? 'border-transparent' : ''}
+            ${phase === 'DASHBOARD' && !isCrosshairActive ? 'border-zinc-800/50' : ''}
+            ${phase === 'DASHBOARD' && isCrosshairActive && !isFiring ? 'border-amber-500/60 animate-pulse shadow-[inset_0_0_30px_rgba(245,158,11,0.2)]' : ''}
+            ${phase === 'DASHBOARD' && isCrosshairActive && isFiring ? 'border-emerald-500 shadow-[inset_0_0_60px_rgba(16,185,129,0.4)] scale-[0.995]' : ''}
+          `} 
+          style={{ animationDuration: '3s' }} // [修改] 设置呼吸动画周期为 3 秒 (默认是 2 秒)
+        />
+
+        {/* 背景网格与粒子 */}
+        <div className="absolute inset-0 z-0 opacity-20">
+           <div className="absolute inset-0" 
+                style={{ backgroundImage: 'linear-gradient(#333 1px, transparent 1px), linear-gradient(90deg, #333 1px, transparent 1px)', backgroundSize: '30px 30px' }} />
+           {particles.current.map(p => (
+             <motion.div
+               key={p.id}
+               className="absolute bg-zinc-500 rounded-full"
+               style={{ width: p.size, height: p.size, left: p.x, top: p.y }}
+               animate={{ 
+                 y: [p.y, p.y - 1000],
+                 opacity: [0, 0.5, 0]
+               }}
+               transition={{ 
+                 duration: (10 / p.speed) / sensitivity, 
+                 repeat: Infinity,
+                 repeatDelay: Math.random() * 2,
+                 ease: "linear"
+               }}
+             />
+           ))}
+        </div>
+
+        {/* 核心交互区域 */}
+        <div className="relative z-10 w-full h-full flex items-center justify-center p-4">
+          
+          <AnimatePresence mode="wait">
+            
+            {/* Phase 1: 设备注册 */}
+            {phase === 'SCAN' && (
+              <motion.div 
+                key="scan"
+                exit={{ scale: 0.8, opacity: 0, filter: "blur(10px)" }}
+                className="relative flex flex-col items-center"
+              >
+                <div className="relative w-48 h-48 flex items-center justify-center">
+                   <div className="absolute inset-0 border-2 border-zinc-800 rounded-full" />
+                   <svg className="absolute inset-0 w-full h-full -rotate-90" viewBox="0 0 256 256">
+                     <motion.circle 
+                       cx="128" cy="128" r="126" 
+                       fill="none" 
+                       strokeWidth="4"
+                       strokeDasharray="792"
+                       initial={{ strokeDashoffset: 792, stroke: "#71717a" }}
+                       animate={{ 
+                         strokeDashoffset: 792 - (792 * shakeProgress / 100),
+                         stroke: shakeProgress > 50 ? "#3b82f6" : "#71717a"
+                       }}
+                       transition={{ type: "spring", stiffness: 60, damping: 15 }}
+                     />
+                   </svg>
+                   <motion.div 
+                     animate={{ scale: [1, 1.1, 1] }}
+                     transition={{ duration: 2, repeat: Infinity }}
+                   >
+                     <Mouse size={48} className="text-zinc-500" />
+                   </motion.div>
+                </div>
+                <motion.div 
+                  initial={{ opacity: 0 }} 
+                  animate={{ opacity: 1 }}
+                  className="mt-8 text-zinc-600 text-xs tracking-[0.2em] font-bold"
+                >
+                  INITIALIZING...
+                </motion.div>
+              </motion.div>
+            )}
+
+            {/* Phase 2: 控制面板 */}
+            {phase === 'DASHBOARD' && (
+              <motion.div 
+                key="dashboard"
+                initial={{ opacity: 0, scale: 1.2 }}
+                animate={{ opacity: 1, scale: 1 }}
+                // [修改] 关键改动：开启 flex-col 和 h-full，并不使用 gap，而是用 justify-between 或者 flex-1 分区
+                className="w-full h-full flex flex-col items-center"
+              >
+                
+                {/* [区域 1] 上半部分：数字显示 */}
+                {/* 使用 flex-1 占据上方所有可用空间，并居中内容 */}
+                <div className="flex-1 w-full flex flex-col items-center justify-center">
+                  {/* [修改] 将 translate-y-6 调整为 translate-y-3，轻微上移 */}
+                  <div className="group relative translate-y-3">
+                    <motion.div 
+                      key={sensitivity}
+                      initial={{ 
+                          y: 15, 
+                          opacity: 0.5, 
+                          filter: 'blur(2px)',
+                          color: isSyncing ? '#f59e0b' : '#ffffff',
+                          textShadow: isSyncing ? '0 0 20px rgba(245,158,11,0.5)' : 'none'
+                      }} 
+                      animate={{ 
+                        y: 0, 
+                        opacity: 1, 
+                        filter: 'blur(0px)',
+                        color: isSyncing ? '#f59e0b' : '#ffffff',
+                        textShadow: isSyncing ? '0 0 20px rgba(245,158,11,0.5)' : 'none'
+                      }}
+                      transition={{ type: "spring", stiffness: 400, damping: 15 }} 
+                      // [修改] 减小字体 text-8xl -> text-7xl
+                      className="relative text-7xl font-black tracking-tighter tabular-nums flex items-baseline"
+                    >
+                      {sensitivity.toFixed(2)}
+                      
+                      {isSyncing && (
+                        <div className="absolute -right-3 top-1 w-1.5 h-1.5 bg-amber-500 rounded-full animate-ping" />
+                      )}
+
+                      <button 
+                          onClick={() => setSensitivity(1.0)}
+                          className="absolute left-full top-1/2 -translate-y-1/2 ml-3 opacity-0 group-hover:opacity-100 transition-opacity p-1.5 hover:bg-zinc-800 rounded text-zinc-500 hover:text-white"
+                      >
+                          <RefreshCw size={12} />
+                      </button>
+                    </motion.div>
+                  </div>
+                </div>
+
+                {/* [区域 2] 中间部分：拉条 (视觉分割线) */}
+                <div className="shrink-0 w-full relative z-20">
+                  <div className="relative h-12 flex items-center justify-center w-10/12 mx-auto">
+                    <input 
+                      type="range" 
+                      min="0" max="100" step="any"
+                      value={sliderPercent}
+                      onChange={(e) => {
+                        const rawVal = toSplitScale(parseFloat(e.target.value));
+                        const roundedVal = Math.round(rawVal * 100) / 100;
+                        if (roundedVal !== sensitivity) {
+                            setSensitivity(roundedVal);
+                        }
+                      }}
+                      className="absolute inset-0 z-20 w-full opacity-0 cursor-ew-resize"
+                    />
+                    
+                    <div className="w-full h-1 bg-zinc-800 rounded-full overflow-hidden">
+                      <motion.div 
+                        className={`h-full transition-colors duration-500 ${isSyncing ? 'bg-amber-500' : 'bg-white'}`}
+                        style={{ width: `${sliderPercent}%` }}
+                      />
+                    </div>
+
+                    <div 
+                      className="absolute top-1/2 -translate-y-1/2 w-0.5 h-3 bg-zinc-600" 
+                      style={{ left: `50%` }}
+                    />
+                    
+                    <motion.div 
+                      className={`absolute h-5 w-1 shadow-[0_0_10px_white] pointer-events-none transition-colors duration-500 ${isSyncing ? 'bg-amber-500' : 'bg-white'}`}
+                      style={{ left: `${sliderPercent}%` }}
+                    />
+
+                    {/* [修改] 将 Syncing 文字改为绝对定位，不占用布局空间，悬浮在拉条下方 */}
+                    <div className="absolute top-full left-0 w-full flex justify-center mt-2 pointer-events-none">
+                        <AnimatePresence>
+                          {isSyncing && (
+                            <motion.span 
+                              initial={{ opacity: 0, y: -5 }} 
+                              animate={{ opacity: 1, y: 0 }} 
+                              exit={{ opacity: 0, y: -5 }}
+                              className="text-[10px] font-mono text-amber-500 tracking-widest scale-90"
+                            >
+                              SYNCING...
+                            </motion.span>
+                          )}
+                        </AnimatePresence>
+                    </div>
+                  </div>
+                </div>
+
+                {/* [区域 3] 下半部分：功能按钮 */}
+                {/* 使用 flex-1 占据下方所有可用空间，并居中内容 */}
+                <div className="flex-1 w-full flex flex-col items-center justify-center">
+                  {/* [修改] 将 -translate-y-4 改为 -translate-y-2 (向上约8px)，折中方案 */}
+                  <div className="flex items-center gap-6 text-zinc-600 -translate-y-2">
+                      <div 
+                        className={`group relative flex flex-col items-center gap-2 transition-all duration-300 
+                          ${isProcessing ? 'cursor-wait' : 'cursor-pointer'}
+                          ${mouseStatus === 'OFF' ? 'opacity-50' : 'opacity-100'}
+                          ${isMouseActive ? 'scale-110' : ''}
+                        `}
+                        onMouseDown={(e) => e.nativeEvent.stopImmediatePropagation()} 
+                        onClick={handleMouseToggle}
+                      >
+                          {/* ==================================================================== */}
+                          {/* [新方案] 独立辉光层 (Bloom Layer) */}
+                          {/* ==================================================================== */}
+                          <AnimatePresence>
+                            {isMouseActive && (
+                              <motion.div
+                                initial={{ opacity: 0, scale: 0.5, x: "-50%", y: "-50%" }}
+                                animate={{ opacity: 1, scale: 1, x: "-50%", y: "-50%" }}
+                                exit={{ opacity: 0, scale: 0.5, x: "-50%", y: "-50%" }}
+                                className="absolute left-1/2 top-1/2 w-24 h-24 pointer-events-none z-0"
+                                style={{ mixBlendMode: 'plus-lighter' }} 
+                              >
+                                <div className="w-full h-full bg-[radial-gradient(circle,rgba(255,255,255,0.8)_0%,rgba(59,130,246,0.6)_40%,rgba(59,130,246,0)_70%)] blur-xl" />
+                              </motion.div>
+                            )}
+                          </AnimatePresence>
+
+                          {/* [修改] 移除了 SVG 旋转动画圈，保持极致简洁 */}
+                          {/* 通过下方 Mouse 图标的颜色变化（蓝/红）和闪烁来表达状态 */}
+
+                        {/* 按钮本体 - 纯净的磨砂玻璃 */}
+                        <div className={`relative z-10 p-4 rounded-full border backdrop-blur-md transition-all duration-500
+                          ${isMouseActive 
+                            ? 'bg-white/10 border-white/80' 
+                            : mouseStatus === 'SHUTTING_DOWN' ? 'bg-red-500/10 border-red-500/50' : 'bg-white/5 border-white/10 hover:bg-white/10'}
+                        `}>
+                          <Mouse size={24} className={`transition-all duration-300 
+                            ${isMouseActive ? 'text-white drop-shadow-[0_0_2px_rgba(255,255,255,1)]' : 'text-white/20'}
+                            ${mouseStatus === 'BOOTING' ? 'animate-pulse text-blue-400' : ''}
+                            ${mouseStatus === 'SHUTTING_DOWN' ? 'text-red-400 opacity-50' : ''}
+                          `} />
+                        </div>
+                      </div>
+
+                      <div className="w-12 h-[1px] bg-zinc-800" />
+
+                      <div 
+                        className={`group relative flex flex-col items-center gap-2 transition-all duration-300 
+                          ${isCrosshairActive ? 'scale-110' : 'opacity-50'}
+                          ${isMouseActive ? 'cursor-pointer' : 'cursor-not-allowed opacity-20'} 
+                        `}
+                        onMouseDown={(e) => e.nativeEvent.stopImmediatePropagation()}
+                        onClick={() => {
+                           if (!isMouseActive) return;
+                           // [修改] 手动切换状态，不再依赖 CapsLock
+                           setIsCrosshairActive(!isCrosshairActive);
+                           setIsFiring(false);
+                        }}
+                      >
+                          {/* ==================================================================== */}
+                          {/* [新方案] 独立辉光层 (Bloom Layer) - 针对第二个按钮 */}
+                          {/* ==================================================================== */}
+                          <AnimatePresence>
+                            {(isFiring || isCrosshairActive) && (
+                              <motion.div
+                                initial={{ opacity: 0, scale: 0.5, x: "-50%", y: "-50%" }}
+                                animate={{ opacity: 1, scale: 1, x: "-50%", y: "-50%" }}
+                                exit={{ opacity: 0, scale: 0.5, x: "-50%", y: "-50%" }}
+                                className="absolute left-1/2 top-1/2 w-24 h-24 pointer-events-none z-0"
+                                style={{ mixBlendMode: 'plus-lighter' }}
+                              >
+                                <div className={`w-full h-full blur-xl transition-all duration-500
+                                  ${isFiring 
+                                    ? 'bg-[radial-gradient(circle,rgba(255,255,255,0.8)_0%,rgba(16,185,129,0.6)_40%,rgba(16,185,129,0)_70%)]' 
+                                    : 'bg-[radial-gradient(circle,rgba(255,255,255,0.8)_0%,rgba(245,158,11,0.6)_40%,rgba(245,158,11,0)_70%)]'}
+                                `} />
+                              </motion.div>
+                            )}
+                          </AnimatePresence>
+
+                        {/* 按钮本体 */}
+                        <div className={`relative z-10 p-4 rounded-full border backdrop-blur-md transition-all duration-500
+                          ${(isFiring || isCrosshairActive) 
+                            ? 'bg-white/10 border-white/80' 
+                            : 'bg-white/5 border-white/10 hover:bg-white/10'}
+                        `}>
+                          <Crosshair 
+                            size={24} 
+                            className={`transition-colors duration-300 
+                              ${(isFiring || isCrosshairActive) 
+                                ? 'text-white drop-shadow-[0_0_2px_rgba(255,255,255,1)]' 
+                                : 'text-white/20'}
+                            `} 
+                          />
+                        </div>
+                      </div>
+                  </div>
+                </div>
+
+              </motion.div>
+            )}
+
+          </AnimatePresence>
+        </div>
+      </div>
+    </div>
+  );
+}
