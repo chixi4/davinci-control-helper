@@ -1419,6 +1419,20 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                         return 0;
                     }
 
+                    // 诊断日志：记录新鼠标第一次移动的详细信息（包括被过滤的包）
+                    if (g_ipcMode.load()) {
+                        char diagBuf[256] = {0};
+                        snprintf(diagBuf, sizeof(diagBuf),
+                                 "DBG_RAW device=0x%p hasMove=%d isRel=%d dx=%ld dy=%ld flags=0x%04X",
+                                 (void*)deviceHandle,
+                                 hasMovement ? 1 : 0,
+                                 isRelative ? 1 : 0,
+                                 raw->data.mouse.lLastX,
+                                 raw->data.mouse.lLastY,
+                                 raw->data.mouse.usFlags);
+                        QueueEvent(diagBuf);
+                    }
+
                     if (g_ipcMode.load()) {
                         const LONG dx = raw->data.mouse.lLastX;
                         const LONG dy = raw->data.mouse.lLastY;
@@ -1447,11 +1461,28 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
                         const DWORD now = GetTickCount();
                         DWORD lastEmit = g_lastScanEmitTick.load();
-                        if (bestProgress >= 100.0f || (now - lastEmit) >= kScanEmitIntervalMs) {
+
+                        // 诊断：记录输出判断
+                        bool shouldEmit = (bestProgress >= 100.0f || lastEmit == 0 || (now - lastEmit) >= kScanEmitIntervalMs);
+                        if (g_ipcMode.load()) {
+                            char diagBuf2[256] = {0};
+                            snprintf(diagBuf2, sizeof(diagBuf2),
+                                     "DBG_EMIT delta=%.1f curr=%.2f best=%.2f now=%lu last=%lu diff=%lu emit=%d",
+                                     delta, currentProgress, bestProgress,
+                                     now, lastEmit, (now - lastEmit), shouldEmit ? 1 : 0);
+                            QueueEvent(diagBuf2);
+                        }
+
+                        if (shouldEmit) {
                             g_lastScanEmitTick.store(now);
                             char buf[64] = {0};
                             snprintf(buf, sizeof(buf), "EVT SCAN_PROGRESS %.2f", bestProgress);
                             QueueEvent(buf);
+
+                            // 修复：首次进度立即flush，确保UI立即看到反馈
+                            if (lastEmit == 0 && bestProgress > 0.0f) {
+                                FlushEvents();
+                            }
                         }
 
                         if (currentProgress >= 100.0f) {

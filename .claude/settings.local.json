@@ -20,7 +20,8 @@
       "Bash(xargs ls:*)",
       "Bash(head:*)",
       "Bash(cl /EHsc /O2:*)",
-      "Bash(powershell.exe -Command:*)"
+      "Bash(powershell.exe -Command:*)",
+      "Bash(uvx:*)"
     ],
     "deny": [],
     "ask": []
