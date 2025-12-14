@@ -1,2 +1,8 @@
 nul
 node_modules
+dist
+dist-portable
+src-tauri/target
+target
+settings.json
+registered_mouse.txt

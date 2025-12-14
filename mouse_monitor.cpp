@@ -28,6 +28,11 @@
 #include <cstdlib>
 #include <atomic>
 #include <cmath>
+#include <iostream>
+#include <mutex>
+#include <queue>
+#include <thread>
+#include <unordered_map>
 #include <vector>
 
 // ========== 全局变量 ==========
@@ -38,6 +43,8 @@ enum class LockState { IDLE, LOCKED, UNLOCKABLE };
 
 // 线程安全的原子变量
 std::atomic<bool> g_running(true);
+std::atomic<bool> g_ipcMode(false);
+std::atomic<bool> g_powerEnabled(false);
 std::atomic<bool> g_featureEnabled(false);
 std::atomic<bool> g_isMouseDown(false);
 std::atomic<DWORD> g_lastRegisteredMoveTime(0);  // 注册鼠标最后移动时间
@@ -58,6 +65,20 @@ wchar_t g_pendingDevicePath[512];
 wchar_t g_registeredDevicePath[512];
 std::string g_registeredHardwareId;
 double g_currentSensitivity = 1.0;
+std::string g_settingsPath;
+std::string g_statePath;
+
+// IPC queues (used in --ipc mode)
+std::mutex g_cmdMutex;
+std::queue<std::string> g_cmdQueue;
+std::mutex g_evtMutex;
+std::queue<std::string> g_evtQueue;
+
+// Registration scan accumulator (IPC mode auto-register)
+std::mutex g_scanMutex;
+std::unordered_map<HANDLE, float> g_scanAccum;
+float g_scanBestProgress = 0.0f;
+std::atomic<DWORD> g_lastScanEmitTick(0);
 
 // 低级鼠标钩子
 HHOOK g_mouseHook = NULL;
@@ -72,6 +93,15 @@ const char* SENS_PROFILE_NAME = "sens_registered_mouse";
 // ========== 函数声明 ==========
 void MouseLeftDown();
 void MouseLeftUp();
+void QueueEvent(const std::string& line);
+void FlushEvents();
+void StartIpcStdinThread();
+void ProcessIpcCommands();
+void HandleIpcCommand(const std::string& line);
+bool ApplySensitivityMultiplier(double multiplier, std::string& errorMsg);
+bool RestoreDefaultSensitivity(std::string& errorMsg);
+std::string TrimString(const std::string& s);
+std::string NormalizeIpcLine(const std::string& line);
 void DecodeExtraInfo(ULONG extraInfo, short* rawX, short* rawY);
 void SetCursorVisible(bool visible);
 void GetDeviceHidPath(HANDLE device, wchar_t* path, size_t pathSize);
@@ -79,6 +109,10 @@ std::string DevicePathToHardwareId(const wchar_t* devicePath);
 std::string WideToAnsi(const std::wstring& ws);
 bool ReadFileContent(const char* path, std::string& content);
 bool WriteFileContent(const char* path, const std::string& content);
+bool SaveLastRegisteredHardwareId(const std::string& hardwareId);
+bool LoadLastRegisteredHardwareId(std::string& hardwareId);
+void ClearLastRegisteredHardwareId();
+bool TryRestoreLastRegisteredMouse();
 bool UpdateSettingsForDevice(const std::string& hardwareId, double sensitivity, std::string& errorMsg);
 bool RunWriterExe();
 void HandleSensitivityInput();
@@ -115,6 +149,243 @@ void MouseLeftUp() {
     SendInput(1, &input, sizeof(INPUT));
 }
 
+void QueueEvent(const std::string& line) {
+    if (!g_ipcMode.load()) return;
+    std::lock_guard<std::mutex> lock(g_evtMutex);
+    g_evtQueue.push(line);
+}
+
+void FlushEvents() {
+    if (!g_ipcMode.load()) return;
+
+    std::queue<std::string> local;
+    {
+        std::lock_guard<std::mutex> lock(g_evtMutex);
+        std::swap(local, g_evtQueue);
+    }
+
+    while (!local.empty()) {
+        printf("%s\n", local.front().c_str());
+        local.pop();
+    }
+    fflush(stdout);
+}
+
+static std::string ToUpperAscii(std::string s) {
+    for (char& c : s) {
+        c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    }
+    return s;
+}
+
+void StartIpcStdinThread() {
+    if (!g_ipcMode.load()) return;
+
+    std::thread([]() {
+        std::string line;
+        while (g_running.load() && std::getline(std::cin, line)) {
+            std::lock_guard<std::mutex> lock(g_cmdMutex);
+            g_cmdQueue.push(line);
+        }
+    }).detach();
+}
+
+void ProcessIpcCommands() {
+    if (!g_ipcMode.load()) return;
+
+    std::queue<std::string> local;
+    {
+        std::lock_guard<std::mutex> lock(g_cmdMutex);
+        std::swap(local, g_cmdQueue);
+    }
+
+    while (!local.empty()) {
+        HandleIpcCommand(local.front());
+        local.pop();
+    }
+}
+
+bool ApplySensitivityMultiplier(double multiplier, std::string& errorMsg) {
+    if (g_registeredDevice.load() == NULL) {
+        errorMsg = "no mouse registered";
+        return false;
+    }
+    if (g_registeredHardwareId.empty()) {
+        errorMsg = "hardware id not available";
+        return false;
+    }
+
+    std::string updateErr;
+    if (!UpdateSettingsForDevice(g_registeredHardwareId, multiplier, updateErr)) {
+        errorMsg = updateErr;
+        return false;
+    }
+
+    if (!RunWriterExe()) {
+        errorMsg = "writer.exe failed";
+        return false;
+    }
+
+    g_currentSensitivity = multiplier;
+    return true;
+}
+
+bool RestoreDefaultSensitivity(std::string& errorMsg) {
+    if (g_settingsPath.empty()) {
+        errorMsg = "settings path not set";
+        return false;
+    }
+
+    std::string content;
+    if (!ReadFileContent(g_settingsPath.c_str(), content)) {
+        errorMsg = "failed to read settings.json";
+        return false;
+    }
+
+    if (!RemoveOldSensDeviceMappings(content, std::string())) {
+        errorMsg = "failed to clear device mappings";
+        return false;
+    }
+
+    if (!WriteFileContent(g_settingsPath.c_str(), content)) {
+        errorMsg = "failed to write settings.json";
+        return false;
+    }
+
+    if (!RunWriterExe()) {
+        errorMsg = "writer.exe failed";
+        return false;
+    }
+
+    return true;
+}
+
+void HandleIpcCommand(const std::string& line) {
+    std::string trimmed = TrimString(NormalizeIpcLine(line));
+    if (trimmed.empty()) return;
+
+    std::istringstream iss(trimmed);
+    std::string cmd;
+    iss >> cmd;
+    cmd = ToUpperAscii(cmd);
+
+    if (cmd == "PING") {
+        QueueEvent("EVT PONG");
+        return;
+    }
+
+    if (cmd == "QUIT") {
+        QueueEvent("EVT EXITING");
+        FlushEvents();
+        FailsafeCleanup();
+        QueueEvent("EVT EXITED");
+        FlushEvents();
+        g_running.store(false);
+        return;
+    }
+
+    if (cmd == "RESET") {
+        PerformFullReset();
+        return;
+    }
+
+    if (cmd == "POWER") {
+        std::string arg;
+        iss >> arg;
+        arg = ToUpperAscii(arg);
+
+        if (arg == "ON") {
+            g_powerEnabled.store(true);
+            QueueEvent("EVT POWER ON");
+
+            if (!g_registeredHardwareId.empty()) {
+                std::string err;
+                if (!ApplySensitivityMultiplier(g_currentSensitivity, err)) {
+                    QueueEvent(std::string("EVT NOTIFY ERR:") + err);
+                }
+            } else {
+                QueueEvent("EVT NOTIFY ERR:NO MOUSE REGISTERED");
+            }
+
+            QueueEvent("EVT POWER_APPLIED ON");
+            return;
+        }
+
+        if (arg == "OFF") {
+            g_powerEnabled.store(false);
+            g_featureEnabled.store(false);
+            ReleaseToIdle();
+            QueueEvent("EVT POWER OFF");
+            QueueEvent("EVT FEATURE OFF");
+
+            std::string err;
+            if (!RestoreDefaultSensitivity(err)) {
+                QueueEvent(std::string("EVT NOTIFY ERR:") + err);
+            }
+
+            QueueEvent("EVT POWER_APPLIED OFF");
+            return;
+        }
+
+        QueueEvent("EVT NOTIFY ERR:INVALID PARAMETER");
+        return;
+    }
+
+    if (cmd == "FEATURE") {
+        std::string arg;
+        iss >> arg;
+        arg = ToUpperAscii(arg);
+
+        if (arg == "ON") {
+            if (!g_powerEnabled.load()) {
+                QueueEvent("EVT NOTIFY ERR:POWER OFF");
+                return;
+            }
+            g_featureEnabled.store(true);
+            QueueEvent("EVT FEATURE ON");
+            return;
+        }
+
+        if (arg == "OFF") {
+            g_featureEnabled.store(false);
+            ReleaseToIdle();
+            QueueEvent("EVT FEATURE OFF");
+            return;
+        }
+
+        QueueEvent("EVT NOTIFY ERR:INVALID PARAMETER");
+        return;
+    }
+
+    if (cmd == "SET_SENS") {
+        double value = 0.0;
+        if (!(iss >> value)) {
+            QueueEvent("EVT NOTIFY ERR:INVALID PARAMETER");
+            return;
+        }
+
+        if (value < 0.001) value = 0.001;
+        if (value > 100.0) value = 100.0;
+        g_currentSensitivity = value;
+
+        if (g_powerEnabled.load() && !g_registeredHardwareId.empty()) {
+            std::string err;
+            if (!ApplySensitivityMultiplier(value, err)) {
+                QueueEvent(std::string("EVT NOTIFY ERR:") + err);
+            }
+        }
+
+        {
+            char buf[64] = {0};
+            snprintf(buf, sizeof(buf), "EVT SENS_APPLIED %.3f", value);
+            QueueEvent(buf);
+        }
+        return;
+    }
+
+    QueueEvent("EVT NOTIFY ERR:UNKNOWN COMMAND");
+}
+
 // ========== 状态机辅助函数 ==========
 
 // 判断其他鼠标的移动是否超过死区（用于过滤抖动）
@@ -143,9 +414,10 @@ DWORD GetCooldownDuration() {
 
 // 进入 LOCKED 状态：按下左键，开始阻止其他鼠标
 void EnterLockedState() {
-    if (!g_isMouseDown.load()) {
+    bool wasDown = g_isMouseDown.exchange(true);
+    if (!wasDown) {
         MouseLeftDown();
-        g_isMouseDown.store(true);
+        QueueEvent("EVT FIRING ON");
     }
     g_lastRegisteredMoveTime.store(GetTickCount());
     g_lockState.store(LockState::LOCKED);
@@ -161,8 +433,10 @@ void EnterUnlockableState() {
 
 // 释放到 IDLE 状态：抬起左键，停止阻止，设置冷却期
 void ReleaseToIdle() {
-    if (g_isMouseDown.exchange(false)) {
+    bool wasDown = g_isMouseDown.exchange(false);
+    if (wasDown) {
         MouseLeftUp();
+        QueueEvent("EVT FIRING OFF");
     }
     g_lockState.store(LockState::IDLE);
     g_blockingMouse.store(false);
@@ -171,8 +445,15 @@ void ReleaseToIdle() {
 
 // 安全清理：确保程序退出时不会留下按住的左键
 void FailsafeCleanup() {
-    if (g_isMouseDown.exchange(false)) {
+    static std::atomic<bool> s_cleanupRan{false};
+    if (s_cleanupRan.exchange(true)) {
+        return;
+    }
+
+    bool wasDown = g_isMouseDown.exchange(false);
+    if (wasDown) {
         MouseLeftUp();
+        QueueEvent("EVT FIRING OFF");
     }
     g_blockingMouse.store(false);
     g_lockState.store(LockState::IDLE);
@@ -180,10 +461,12 @@ void FailsafeCleanup() {
 
     // 退出时恢复鼠标灵敏度：清理 settings.json 中的设备映射
     std::string content;
-    if (ReadFileContent(SETTINGS_FILE, content)) {
+    if (ReadFileContent(g_settingsPath.c_str(), content)) {
         if (RemoveOldSensDeviceMappings(content, std::string())) {
-            if (WriteFileContent(SETTINGS_FILE, content)) {
-                printf("\n[EXIT] Restored mouse sensitivity (cleared device mappings)\n");
+            if (WriteFileContent(g_settingsPath.c_str(), content)) {
+                if (!g_ipcMode.load()) {
+                    printf("\n[EXIT] Restored mouse sensitivity (cleared device mappings)\n");
+                }
                 RunWriterExe();  // 应用配置
             }
         }
@@ -195,8 +478,14 @@ void FailsafeCleanup() {
 // - 关闭自动按左键功能并释放按键
 // - 取消注册设备，回到注册模式
 void PerformFullReset() {
-    printf("\n[RESET] Full reset triggered (Caps Lock double-press)\n");
-    fflush(stdout);
+    if (!g_ipcMode.load()) {
+        printf("\n[RESET] Full reset triggered (Caps Lock double-press)\n");
+        fflush(stdout);
+    }
+
+    if (g_ipcMode.load()) {
+        g_powerEnabled.store(false);
+    }
 
     std::string hardwareId = g_registeredHardwareId; // 先拷贝，后面会清空注册信息
 
@@ -210,9 +499,9 @@ void PerformFullReset() {
     // 清理 settings.json 中映射到 sens_registered_mouse 的设备，避免残留映射影响其他鼠标
     {
         std::string content;
-        if (ReadFileContent(SETTINGS_FILE, content)) {
+        if (ReadFileContent(g_settingsPath.c_str(), content)) {
             if (RemoveOldSensDeviceMappings(content, std::string())) {
-                if (!WriteFileContent(SETTINGS_FILE, content)) {
+                if (!WriteFileContent(g_settingsPath.c_str(), content)) {
                     printf("[RESET] [WARN] Failed to write settings.json while clearing device mappings.\n");
                 } else {
                     printf("[RESET] Cleared device mappings for profile: %s\n", SENS_PROFILE_NAME);
@@ -237,6 +526,7 @@ void PerformFullReset() {
     g_pendingDevicePath[0] = L'\0';
     g_registeredDevicePath[0] = L'\0';
     g_registeredHardwareId.clear();
+    ClearLastRegisteredHardwareId();
 
     // 重置状态机/统计相关状态
     g_lastRegisteredMoveTime.store(0);
@@ -249,8 +539,22 @@ void PerformFullReset() {
     g_lastRawX = 0;
     g_lastRawY = 0;
 
-    printf("[REGISTER] Move the mouse you want to register...\n\n");
-    fflush(stdout);
+    {
+        std::lock_guard<std::mutex> lock(g_scanMutex);
+        g_scanAccum.clear();
+        g_scanBestProgress = 0.0f;
+        g_lastScanEmitTick.store(0);
+    }
+    QueueEvent("EVT SCAN_PROGRESS 0.0");
+    QueueEvent("EVT SENS_APPLIED 1.0");
+    QueueEvent("EVT RESET");
+    QueueEvent("EVT POWER OFF");
+    QueueEvent("EVT FEATURE OFF");
+
+    if (!g_ipcMode.load()) {
+        printf("[REGISTER] Move the mouse you want to register...\n\n");
+        fflush(stdout);
+    }
 }
 
 // ========== 低级鼠标钩子 ==========
@@ -409,6 +713,131 @@ std::string TrimString(const std::string& s) {
     size_t end = s.size();
     while (end > start && std::isspace(static_cast<unsigned char>(s[end - 1]))) end--;
     return s.substr(start, end - start);
+}
+
+bool SaveLastRegisteredHardwareId(const std::string& hardwareId) {
+    if (hardwareId.empty() || g_statePath.empty()) return false;
+    return WriteFileContent(g_statePath.c_str(), hardwareId + "\n");
+}
+
+bool LoadLastRegisteredHardwareId(std::string& hardwareId) {
+    if (g_statePath.empty()) return false;
+    std::string content;
+    if (!ReadFileContent(g_statePath.c_str(), content)) return false;
+    hardwareId = TrimString(content);
+    return !hardwareId.empty();
+}
+
+void ClearLastRegisteredHardwareId() {
+    if (g_statePath.empty()) return;
+    DeleteFileA(g_statePath.c_str());
+}
+
+bool TryRestoreLastRegisteredMouse() {
+    std::string hardwareId;
+    if (!LoadLastRegisteredHardwareId(hardwareId)) return false;
+
+    UINT count = 0;
+    if (GetRawInputDeviceList(NULL, &count, sizeof(RAWINPUTDEVICELIST)) != 0 || count == 0) {
+        return false;
+    }
+
+    std::vector<RAWINPUTDEVICELIST> list(static_cast<size_t>(count));
+    UINT got = GetRawInputDeviceList(list.data(), &count, sizeof(RAWINPUTDEVICELIST));
+    if (got == static_cast<UINT>(-1)) {
+        return false;
+    }
+
+    for (UINT i = 0; i < got; ++i) {
+        HANDLE device = list[i].hDevice;
+        if (!device) continue;
+
+        wchar_t path[512] = {0};
+        GetDeviceHidPath(device, path, sizeof(path) / sizeof(wchar_t));
+        if (path[0] == L'\0') continue;
+
+        std::string id = DevicePathToHardwareId(path);
+        if (id.empty()) continue;
+        if (id != hardwareId) continue;
+
+        g_registeredDevice.store(device);
+        wcscpy_s(g_registeredDevicePath, path);
+        g_registeredHardwareId = id;
+        g_registrationMode.store(false);
+        return true;
+    }
+
+    return false;
+}
+
+// Normalize stdin lines in IPC mode:
+// - PowerShell may pipe UTF-16LE/BE strings to native executables.
+// - Some tools may include UTF-8 BOM.
+std::string NormalizeIpcLine(const std::string& line) {
+    std::string s = line;
+
+    // Strip UTF-8 BOM if present.
+    if (s.size() >= 3 &&
+        static_cast<unsigned char>(s[0]) == 0xEF &&
+        static_cast<unsigned char>(s[1]) == 0xBB &&
+        static_cast<unsigned char>(s[2]) == 0xBF) {
+        s = s.substr(3);
+    }
+
+    const bool hasUtf16Bom =
+        s.size() >= 2 &&
+        ((static_cast<unsigned char>(s[0]) == 0xFF && static_cast<unsigned char>(s[1]) == 0xFE) ||
+         (static_cast<unsigned char>(s[0]) == 0xFE && static_cast<unsigned char>(s[1]) == 0xFF));
+
+    const bool hasNul = s.find('\0') != std::string::npos;
+
+    if (hasUtf16Bom || hasNul) {
+        bool littleEndian = true;
+        size_t start = 0;
+
+        if (hasUtf16Bom) {
+            littleEndian = (static_cast<unsigned char>(s[0]) == 0xFF);
+            start = 2;
+        } else {
+            // Heuristic: UTF-16LE ASCII tends to have NULs at odd indices; UTF-16BE at even indices.
+            size_t zerosEven = 0;
+            size_t zerosOdd = 0;
+            for (size_t i = 0; i < s.size(); ++i) {
+                if (s[i] == '\0') {
+                    if ((i & 1) == 0) zerosEven++;
+                    else zerosOdd++;
+                }
+            }
+            littleEndian = zerosOdd >= zerosEven;
+        }
+
+        std::string decoded;
+        decoded.reserve(s.size() / 2);
+        for (size_t i = start; i + 1 < s.size(); i += 2) {
+            const unsigned char b0 = static_cast<unsigned char>(s[i]);
+            const unsigned char b1 = static_cast<unsigned char>(s[i + 1]);
+            const unsigned short u = littleEndian ? static_cast<unsigned short>(b0 | (b1 << 8))
+                                                  : static_cast<unsigned short>(b1 | (b0 << 8));
+
+            if (u == 0) continue;
+            if (u <= 0x7F) {
+                decoded.push_back(static_cast<char>(u));
+                continue;
+            }
+            if (u == 0xFEFF) continue; // BOM codepoint
+            decoded.push_back('?');
+        }
+
+        s.swap(decoded);
+    }
+
+    // Defensive: strip any remaining NULs.
+    std::string filtered;
+    filtered.reserve(s.size());
+    for (char c : s) {
+        if (c != '\0') filtered.push_back(c);
+    }
+    return filtered;
 }
 
 // 在JSON中查找数组的范围 [arrayStart, arrayEnd]
@@ -810,7 +1239,7 @@ bool AddOrUpdateDeviceMapping(std::string& content, const std::string& hardwareI
 // 更新settings.json为指定设备设置灵敏度
 bool UpdateSettingsForDevice(const std::string& hardwareId, double sensitivity, std::string& errorMsg) {
     std::string content;
-    if (!ReadFileContent(SETTINGS_FILE, content)) {
+    if (!ReadFileContent(g_settingsPath.c_str(), content)) {
         errorMsg = "failed to read settings.json";
         return false;
     }
@@ -834,7 +1263,7 @@ bool UpdateSettingsForDevice(const std::string& hardwareId, double sensitivity, 
     }
 
     // 写回文件
-    if (!WriteFileContent(SETTINGS_FILE, content)) {
+    if (!WriteFileContent(g_settingsPath.c_str(), content)) {
         errorMsg = "failed to write settings.json";
         return false;
     }
@@ -854,7 +1283,7 @@ bool RunWriterExe() {
     size_t slash = path.find_last_of("\\/");
     std::string dir = (slash == std::string::npos) ? "" : path.substr(0, slash + 1);
     std::string writerPath = dir + "writer.exe";
-    std::string settingsPath = dir + "settings.json";
+    std::string settingsPath = g_settingsPath.empty() ? (dir + SETTINGS_FILE) : g_settingsPath;
 
     // 构建命令行: writer.exe <settings file path>
     std::string cmdLine = "\"" + writerPath + "\" \"" + settingsPath + "\"";
@@ -985,17 +1414,86 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 // 注册模式：检测移动的鼠标并显示设备信息
                 if (isRegistrationMode) {
                     bool hasMovement = (raw->data.mouse.lLastX != 0 || raw->data.mouse.lLastY != 0);
-                    if (hasMovement && deviceHandle != g_pendingDevice.load()) {
-                        g_pendingDevice.store(deviceHandle);
-                        GetDeviceHidPath(deviceHandle, g_pendingDevicePath, sizeof(g_pendingDevicePath)/sizeof(wchar_t));
+                    bool isRelative = !(raw->data.mouse.usFlags & MOUSE_MOVE_ABSOLUTE);
+                    if (!hasMovement || !isRelative) {
+                        return 0;
+                    }
 
-                        printf("\r                                                                              \r");
-                        printf("[DETECT] Device: 0x%p\n", deviceHandle);
-                        if (g_pendingDevicePath[0] != L'\0') {
-                            wprintf(L"         Path: %ls\n", g_pendingDevicePath);
+                    if (g_ipcMode.load()) {
+                        const LONG dx = raw->data.mouse.lLastX;
+                        const LONG dy = raw->data.mouse.lLastY;
+                        const float delta = static_cast<float>(std::abs(dx) + std::abs(dy));
+                        if (delta <= 0.0f) {
+                            return 0;
                         }
-                        printf("         Press Y to register this mouse, N to skip\n");
-                        fflush(stdout);
+
+                        const float kScanThreshold = 2000.0f;
+                        const DWORD kScanEmitIntervalMs = 10;
+                        float bestProgress = 0.0f;
+                        float currentProgress = 0.0f;
+
+                        {
+                            std::lock_guard<std::mutex> lock(g_scanMutex);
+                            float& acc = g_scanAccum[deviceHandle];
+                            acc += delta;
+                            currentProgress = (acc / kScanThreshold) * 100.0f;
+                            if (currentProgress > 100.0f) currentProgress = 100.0f;
+
+                            if (currentProgress > g_scanBestProgress) {
+                                g_scanBestProgress = currentProgress;
+                            }
+                            bestProgress = g_scanBestProgress;
+                        }
+
+                        const DWORD now = GetTickCount();
+                        DWORD lastEmit = g_lastScanEmitTick.load();
+                        if (bestProgress >= 100.0f || (now - lastEmit) >= kScanEmitIntervalMs) {
+                            g_lastScanEmitTick.store(now);
+                            char buf[64] = {0};
+                            snprintf(buf, sizeof(buf), "EVT SCAN_PROGRESS %.2f", bestProgress);
+                            QueueEvent(buf);
+                        }
+
+                        if (currentProgress >= 100.0f) {
+                            bool expected = true;
+                            if (!g_registrationMode.compare_exchange_strong(expected, false)) {
+                                return 0;
+                            }
+
+                            g_registeredDevice.store(deviceHandle);
+                            GetDeviceHidPath(deviceHandle, g_registeredDevicePath, sizeof(g_registeredDevicePath)/sizeof(wchar_t));
+                            g_registeredHardwareId = DevicePathToHardwareId(g_registeredDevicePath);
+
+                            if (!g_registeredHardwareId.empty() && !g_settingsPath.empty()) {
+                                std::string content;
+                                if (ReadFileContent(g_settingsPath.c_str(), content)) {
+                                    if (RemoveOldSensDeviceMappings(content, g_registeredHardwareId)) {
+                                        WriteFileContent(g_settingsPath.c_str(), content);
+                                    }
+                                }
+                            }
+
+                            if (!g_registeredHardwareId.empty()) {
+                                SaveLastRegisteredHardwareId(g_registeredHardwareId);
+                                QueueEvent(std::string("EVT REGISTERED ") + g_registeredHardwareId);
+                            } else {
+                                QueueEvent("EVT NOTIFY ERR:HWID NOT FOUND");
+                                QueueEvent("EVT REGISTERED ");
+                            }
+                        }
+                    } else {
+                        if (deviceHandle != g_pendingDevice.load()) {
+                            g_pendingDevice.store(deviceHandle);
+                            GetDeviceHidPath(deviceHandle, g_pendingDevicePath, sizeof(g_pendingDevicePath)/sizeof(wchar_t));
+
+                            printf("\r                                                                              \r");
+                            printf("[DETECT] Device: 0x%p\n", deviceHandle);
+                            if (g_pendingDevicePath[0] != L'\0') {
+                                wprintf(L"         Path: %ls\n", g_pendingDevicePath);
+                            }
+                            printf("         Press Y to register this mouse, N to skip\n");
+                            fflush(stdout);
+                        }
                     }
                 }
                 // 正常模式
@@ -1047,7 +1545,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                             if (hasMoved) {
                                 g_moveCount++;
                                 DWORD now = GetTickCount();
-                                bool featureEnabled = g_featureEnabled.load();
+                                bool featureEnabled = g_featureEnabled.load() && g_powerEnabled.load();
                                 LockState currentState = g_lockState.load();
                                 DWORD cooldownUntil = g_cooldownUntil.load();
 
@@ -1058,7 +1556,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                                 bool shouldPrint = (s_lastPrintTick == 0) || ((DWORD)(now - s_lastPrintTick) >= kPrintIntervalMs);
                                 if (shouldPrint) s_lastPrintTick = now;
 
-                                if (shouldPrint) {
+                                if (shouldPrint && !g_ipcMode.load()) {
                                     // 显示移动信息
                                     const char* stateStr = "IDLE";
                                     if (currentState == LockState::LOCKED) stateStr = "LOCK";
@@ -1115,7 +1613,12 @@ DWORD WINAPI MessageLoopThread(LPVOID lpParam) {
     wc.lpszClassName = "RawInputMouseMonitor";
 
     if (!RegisterClassA(&wc)) {
-        printf("[ERROR] RegisterClass failed: %lu\n", GetLastError());
+        if (g_ipcMode.load()) {
+            QueueEvent("EVT NOTIFY FS:OFFLINE");
+            QueueEvent("EVT NOTIFY ERR:REGISTER CLASS FAILED");
+        } else {
+            printf("[ERROR] RegisterClass failed: %lu\n", GetLastError());
+        }
         return 1;
     }
 
@@ -1132,7 +1635,12 @@ DWORD WINAPI MessageLoopThread(LPVOID lpParam) {
     );
 
     if (!g_hWnd) {
-        printf("[ERROR] CreateWindow failed: %lu\n", GetLastError());
+        if (g_ipcMode.load()) {
+            QueueEvent("EVT NOTIFY FS:OFFLINE");
+            QueueEvent("EVT NOTIFY ERR:CREATE WINDOW FAILED");
+        } else {
+            printf("[ERROR] CreateWindow failed: %lu\n", GetLastError());
+        }
         return 1;
     }
 
@@ -1144,17 +1652,35 @@ DWORD WINAPI MessageLoopThread(LPVOID lpParam) {
     rid.hwndTarget = g_hWnd;
 
     if (!RegisterRawInputDevices(&rid, 1, sizeof(rid))) {
-        printf("[ERROR] RegisterRawInputDevices failed: %lu\n", GetLastError());
+        if (g_ipcMode.load()) {
+            QueueEvent("EVT NOTIFY FS:OFFLINE");
+            QueueEvent("EVT NOTIFY ERR:REGISTER RAW INPUT FAILED");
+        } else {
+            printf("[ERROR] RegisterRawInputDevices failed: %lu\n", GetLastError());
+        }
         return 1;
     }
 
-    printf("[OK] Raw Input registered\n");
+    if (g_ipcMode.load()) {
+        QueueEvent("EVT INPUT_READY");
+        FlushEvents();
+    }
+
+    if (!g_ipcMode.load()) {
+        printf("[OK] Raw Input registered\n");
+    }
 
     // 安装低级鼠标钩子
     if (!InstallMouseHook()) {
-        printf("[WARN] Failed to install mouse hook: %lu (feature will work without blocking)\n", GetLastError());
+        if (g_ipcMode.load()) {
+            QueueEvent("EVT NOTIFY ERR:MOUSE HOOK FAILED");
+        } else {
+            printf("[WARN] Failed to install mouse hook: %lu (feature will work without blocking)\n", GetLastError());
+        }
     } else {
-        printf("[OK] Low-level mouse hook installed\n");
+        if (!g_ipcMode.load()) {
+            printf("[OK] Low-level mouse hook installed\n");
+        }
     }
 
     // 消息循环
@@ -1169,11 +1695,64 @@ DWORD WINAPI MessageLoopThread(LPVOID lpParam) {
     return 0;
 }
 
-int main() {
-    // 隐藏控制台光标，解决闪烁问题
-    SetCursorVisible(false);
+int main(int argc, char** argv) {
+    // Default settings path: next to this executable.
+    {
+        char modulePath[MAX_PATH] = {0};
+        if (GetModuleFileNameA(NULL, modulePath, MAX_PATH)) {
+            std::string exePath(modulePath);
+            size_t slash = exePath.find_last_of("\\/");
+            std::string dir = (slash == std::string::npos) ? std::string() : exePath.substr(0, slash + 1);
+            g_settingsPath = dir + SETTINGS_FILE;
+        } else {
+            g_settingsPath = SETTINGS_FILE;
+        }
+    }
 
-    printf("=== Mouse Monitor (Pure User-Mode) ===\n");
+    for (int i = 1; i < argc; ++i) {
+        std::string arg = argv[i] ? argv[i] : "";
+        if (arg == "--ipc") {
+            g_ipcMode.store(true);
+            continue;
+        }
+        if (arg == "--settings" && (i + 1) < argc) {
+            g_settingsPath = argv[++i];
+            continue;
+        }
+    }
+
+    // State file lives next to settings.json (portable).
+    {
+        std::string dir;
+        size_t slash = g_settingsPath.find_last_of("\\/");
+        if (slash != std::string::npos) {
+            dir = g_settingsPath.substr(0, slash + 1);
+        }
+        g_statePath = dir + "registered_mouse.txt";
+    }
+
+    const bool restored = TryRestoreLastRegisteredMouse();
+
+    // CLI mode has no separate "power" toggle; keep it enabled for existing behavior.
+    if (!g_ipcMode.load()) {
+        g_powerEnabled.store(true);
+    } else {
+        StartIpcStdinThread();
+        QueueEvent("EVT READY");
+        if (restored && !g_registeredHardwareId.empty()) {
+            QueueEvent("EVT SCAN_PROGRESS 100.0");
+            QueueEvent(std::string("EVT REGISTERED ") + g_registeredHardwareId);
+        } else {
+            QueueEvent("EVT SCAN_PROGRESS 0.0");
+        }
+        FlushEvents();
+    }
+
+    // 隐藏控制台光标，解决闪烁问题
+    if (!g_ipcMode.load()) {
+        SetCursorVisible(false);
+
+        printf("=== Mouse Monitor (Pure User-Mode) ===\n");
     printf("\n");
     printf("This tool reads mouse movement via Raw Input API.\n");
     printf("For raw (unaccelerated) data, enable 'setExtraInfo' in settings.json\n");
@@ -1185,34 +1764,56 @@ int main() {
     printf("  Caps Lock - Double-press to full reset\n");
     printf("  Q         - Quit\n");
     printf("\n");
+    }
 
     // 启动消息循环线程
     HANDLE hThread = CreateThread(NULL, 0, MessageLoopThread, NULL, 0, NULL);
     if (!hThread) {
-        printf("[ERROR] Failed to create message thread: %lu\n", GetLastError());
-        SetCursorVisible(true);
-        return 1;
+        if (g_ipcMode.load()) {
+            QueueEvent("EVT NOTIFY FS:OFFLINE");
+            QueueEvent("EVT NOTIFY ERR:MESSAGE THREAD FAILED");
+            FlushEvents();
+            return 1;
+        } else {
+            printf("[ERROR] Failed to create message thread: %lu\n", GetLastError());
+            SetCursorVisible(true);
+            return 1;
+        }
     }
 
     // 等待窗口创建完成
     Sleep(100);
 
     if (!g_hWnd) {
-        printf("[ERROR] Window not created\n");
+        if (g_ipcMode.load()) {
+            QueueEvent("EVT NOTIFY FS:OFFLINE");
+            QueueEvent("EVT NOTIFY ERR:WINDOW NOT CREATED");
+            FlushEvents();
+        } else {
+            printf("[ERROR] Window not created\n");
+        }
         WaitForSingleObject(hThread, 1000);
         CloseHandle(hThread);
-        SetCursorVisible(true);
+        if (!g_ipcMode.load()) {
+            SetCursorVisible(true);
+        }
         return 1;
     }
 
-    printf("[REGISTER] Move the mouse you want to register...\n\n");
+    if (!g_ipcMode.load() && g_registrationMode.load()) {
+        printf("[REGISTER] Move the mouse you want to register...\n\n");
+    }
 
     // 主循环
     g_featureEnabled.store(false);
 
     while (g_running.load()) {
+        if (g_ipcMode.load()) {
+            ProcessIpcCommands();
+        }
+
         // 检查按键
-        if (_kbhit()) {
+        if (!g_ipcMode.load() && _kbhit()) {
             char ch = _getch();
 
             // 退出键
@@ -1254,14 +1855,17 @@ int main() {
                     }
                     wcscpy_s(g_registeredDevicePath, g_pendingDevicePath);
                     g_registeredHardwareId = DevicePathToHardwareId(g_registeredDevicePath);
+                    if (!g_registeredHardwareId.empty()) {
+                        SaveLastRegisteredHardwareId(g_registeredHardwareId);
+                    }
 
                     // 注册新鼠标时：清理 settings.json 中所有其他映射到 sens_registered_mouse 的设备，
                     // 只保留当前注册设备（若当前设备此前不存在映射，则清理后将不再保留任何旧映射）。
                     if (!g_registeredHardwareId.empty()) {
                         std::string content;
-                        if (ReadFileContent(SETTINGS_FILE, content)) {
+                        if (ReadFileContent(g_settingsPath.c_str(), content)) {
                             if (RemoveOldSensDeviceMappings(content, g_registeredHardwareId)) {
-                                WriteFileContent(SETTINGS_FILE, content);
+                                WriteFileContent(g_settingsPath.c_str(), content);
                             }
                         }
                     }
@@ -1303,6 +1907,7 @@ int main() {
         }
 
         // 注册模式下只处理按键，跳过其他逻辑
+        FlushEvents();
         if (g_registrationMode.load()) {
             Sleep(10);
             continue;
@@ -1326,6 +1931,7 @@ int main() {
 
     // 确保清理
     FailsafeCleanup();
+    FlushEvents();
 
     // 停止消息循环
     if (g_hWnd) {
@@ -1334,9 +1940,10 @@ int main() {
     WaitForSingleObject(hThread, 1000);
     CloseHandle(hThread);
 
-    // 恢复光标可见性
-    SetCursorVisible(true);
-
-    printf("\n\nMonitor stopped.\n");
+    if (!g_ipcMode.load()) {
+        // 恢复光标可见性
+        SetCursorVisible(true);
+        printf("\n\nMonitor stopped.\n");
+    }
     return 0;
 }

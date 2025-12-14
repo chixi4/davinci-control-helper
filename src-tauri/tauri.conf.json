@@ -1,0 +1,39 @@
+{
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build",
+    "devPath": "http://localhost:5173",
+    "distDir": "../dist"
+  },
+  "package": {
+    "productName": "RawAccel Monitor",
+    "version": "0.1.0"
+  },
+  "tauri": {
+    "allowlist": {
+      "all": true
+    },
+    "windows": [
+      {
+        "title": "RawAccel Monitor",
+        "width": 320,
+        "height": 460,
+        "resizable": false,
+        "fullscreen": false,
+        "decorations": false,
+        "transparent": true
+      }
+    ],
+    "security": {
+      "csp": null
+    },
+    "bundle": {
+      "identifier": "com.rawaccel.monitor",
+      "icon": [
+        "icons/icon.ico"
+      ],
+      "active": true,
+      "targets": "all"
+    }
+  }
+}
