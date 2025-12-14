@@ -77,7 +77,7 @@ std::queue<std::string> g_evtQueue;
 // Registration scan accumulator (IPC mode auto-register)
 std::mutex g_scanMutex;
 std::unordered_map<HANDLE, float> g_scanAccum;
-float g_scanBestProgress = 0.0f;
+std::atomic<HANDLE> g_lastScanEmitDevice(nullptr);
 std::atomic<DWORD> g_lastScanEmitTick(0);
 
 // 低级鼠标钩子
@@ -542,7 +542,7 @@ void PerformFullReset() {
     {
         std::lock_guard<std::mutex> lock(g_scanMutex);
         g_scanAccum.clear();
-        g_scanBestProgress = 0.0f;
+        g_lastScanEmitDevice.store(nullptr);
         g_lastScanEmitTick.store(0);
     }
     QueueEvent("EVT SCAN_PROGRESS 0.0");
@@ -1419,20 +1419,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                         return 0;
                     }
 
-                    // 诊断日志：记录新鼠标第一次移动的详细信息（包括被过滤的包）
-                    if (g_ipcMode.load()) {
-                        char diagBuf[256] = {0};
-                        snprintf(diagBuf, sizeof(diagBuf),
-                                 "DBG_RAW device=0x%p hasMove=%d isRel=%d dx=%ld dy=%ld flags=0x%04X",
-                                 (void*)deviceHandle,
-                                 hasMovement ? 1 : 0,
-                                 isRelative ? 1 : 0,
-                                 raw->data.mouse.lLastX,
-                                 raw->data.mouse.lLastY,
-                                 raw->data.mouse.usFlags);
-                        QueueEvent(diagBuf);
-                    }
-
                     if (g_ipcMode.load()) {
                         const LONG dx = raw->data.mouse.lLastX;
                         const LONG dy = raw->data.mouse.lLastY;
@@ -1443,7 +1429,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
                         const float kScanThreshold = 2000.0f;
                         const DWORD kScanEmitIntervalMs = 10;
-                        float bestProgress = 0.0f;
                         float currentProgress = 0.0f;
 
                         {
@@ -1452,35 +1437,25 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                             acc += delta;
                             currentProgress = (acc / kScanThreshold) * 100.0f;
                             if (currentProgress > 100.0f) currentProgress = 100.0f;
-
-                            if (currentProgress > g_scanBestProgress) {
-                                g_scanBestProgress = currentProgress;
-                            }
-                            bestProgress = g_scanBestProgress;
                         }
 
                         const DWORD now = GetTickCount();
                         DWORD lastEmit = g_lastScanEmitTick.load();
+                        HANDLE lastDev = g_lastScanEmitDevice.load();
+                        const bool deviceChanged = (lastDev != deviceHandle);
 
-                        // 诊断：记录输出判断
-                        bool shouldEmit = (bestProgress >= 100.0f || lastEmit == 0 || (now - lastEmit) >= kScanEmitIntervalMs);
-                        if (g_ipcMode.load()) {
-                            char diagBuf2[256] = {0};
-                            snprintf(diagBuf2, sizeof(diagBuf2),
-                                     "DBG_EMIT delta=%.1f curr=%.2f best=%.2f now=%lu last=%lu diff=%lu emit=%d",
-                                     delta, currentProgress, bestProgress,
-                                     now, lastEmit, (now - lastEmit), shouldEmit ? 1 : 0);
-                            QueueEvent(diagBuf2);
-                        }
+                        bool shouldEmit = (currentProgress >= 100.0f || lastEmit == 0 || deviceChanged ||
+                                           (now - lastEmit) >= kScanEmitIntervalMs);
 
                         if (shouldEmit) {
                             g_lastScanEmitTick.store(now);
+                            g_lastScanEmitDevice.store(deviceHandle);
                             char buf[64] = {0};
-                            snprintf(buf, sizeof(buf), "EVT SCAN_PROGRESS %.2f", bestProgress);
+                            snprintf(buf, sizeof(buf), "EVT SCAN_PROGRESS %.2f", currentProgress);
                             QueueEvent(buf);
 
-                            // 修复：首次进度立即flush，确保UI立即看到反馈
-                            if (lastEmit == 0 && bestProgress > 0.0f) {
+                            // 立即 flush：确保首次/换设备时 UI 立刻看到反馈（避免“要晃两下”）
+                            if ((lastEmit == 0 || deviceChanged) && currentProgress > 0.0f) {
                                 FlushEvents();
                             }
                         }
