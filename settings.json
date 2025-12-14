@@ -139,7 +139,7 @@
         "Time in ms after which scale is weighted at half its original value.": 0.0,
         "Time in ms after which an output is weighted at half its original value.": 0.0
       },
-      "Output DPI": 1000.0,
+      "Output DPI": 10.0,
       "Y/X output DPI ratio (vertical sens multiplier)": 1.0,
       "L/R output DPI ratio (left sens multiplier)": 1.0,
       "U/D output DPI ratio (up sens multiplier)": 1.0,
@@ -149,29 +149,8 @@
     }
   ],
   "devices": [
-    {
-      "name": "Registered Mouse",
-      "profile": "sens_registered_mouse",
-      "id": "HID\\VID_047D&PID_80D6&MI_00",
-      "config": {
-        "disable": false,
-        "setExtraInfo": true,
-        "Use constant time interval based on polling rate": false,
-        "DPI (normalizes input speed unit: counts/ms -> in/s)": 0,
-        "Polling rate Hz (keep at 0 for automatic adjustment)": 0
-      }
-    },
-    {
-      "name": "Registered Mouse",
-      "profile": "sens_registered_mouse",
-      "id": "HID\\{00001812-0000-1000-8000-00805f9b34fb}_Dev_VID&02047d_PID&80d4_REV&6701_d659ebc655ec",
-      "config": {
-        "disable": false,
-        "setExtraInfo": true,
-        "Use constant time interval based on polling rate": false,
-        "DPI (normalizes input speed unit: counts/ms -> in/s)": 0,
-        "Polling rate Hz (keep at 0 for automatic adjustment)": 0
-      }
-    }
+  
+  
+  
   ]
 }

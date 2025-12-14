@@ -5,7 +5,8 @@
  * - 通过 Raw Input API 读取鼠标移动数据
  * - 从 ExtraInformation 字段解码原始移动量（需要 rawaccel 启用 setExtraInfo）
  * - 支持注册特定鼠标，只响应该鼠标的移动
- * - Caps Lock 开启/关闭自动左键功能
+ * - 按 P 键开启/关闭自动左键功能（切换）
+ * - 双击 Caps Lock 执行完整重置（回到注册模式）
  * - 检测到鼠标移动时自动按下左键，停止移动时松开
  *
  * 编译：
@@ -95,6 +96,8 @@ LRESULT CALLBACK LowLevelMouseProc(int nCode, WPARAM wParam, LPARAM lParam);
 bool InstallMouseHook();
 void UninstallMouseHook();
 void FailsafeCleanup();
+void PerformFullReset();
+bool RemoveOldSensDeviceMappings(std::string& content, const std::string& currentHardwareId);
 
 // 模拟鼠标左键按下
 void MouseLeftDown() {
@@ -174,6 +177,69 @@ void FailsafeCleanup() {
     g_blockingMouse.store(false);
     g_lockState.store(LockState::IDLE);
     UninstallMouseHook();
+}
+
+// 双击 Caps Lock 触发的完整重置：
+// - 恢复灵敏度为 1.0（如有已注册设备则同步 settings.json 并尝试 writer.exe 应用）
+// - 关闭自动按左键功能并释放按键
+// - 取消注册设备，回到注册模式
+void PerformFullReset() {
+    printf("\n[RESET] Full reset triggered (Caps Lock double-press)\n");
+    fflush(stdout);
+
+    std::string hardwareId = g_registeredHardwareId; // 先拷贝，后面会清空注册信息
+
+    // 关闭自动按键功能并确保释放
+    g_featureEnabled.store(false);
+    ReleaseToIdle();
+
+    // 恢复灵敏为 1.0（程序内状态）
+    g_currentSensitivity = 1.0;
+
+    // 清理 settings.json 中映射到 sens_registered_mouse 的设备，避免残留映射影响其他鼠标
+    {
+        std::string content;
+        if (ReadFileContent(SETTINGS_FILE, content)) {
+            if (RemoveOldSensDeviceMappings(content, std::string())) {
+                if (!WriteFileContent(SETTINGS_FILE, content)) {
+                    printf("[RESET] [WARN] Failed to write settings.json while clearing device mappings.\n");
+                } else {
+                    printf("[RESET] Cleared device mappings for profile: %s\n", SENS_PROFILE_NAME);
+                    printf("[RESET] Running writer.exe to apply configuration...\n");
+                    if (!RunWriterExe()) {
+                        printf("[RESET] [WARN] writer.exe may have failed. Check if RawAccel is running.\n");
+                    }
+                }
+            } else {
+                printf("[RESET] [WARN] Failed to clear device mappings (devices array parse failed).\n");
+            }
+        } else {
+            printf("[RESET] [WARN] Failed to read settings.json while clearing device mappings.\n");
+        }
+        fflush(stdout);
+    }
+
+    // 取消注册并回到注册模式
+    g_registeredDevice.store(NULL);
+    g_pendingDevice.store(NULL);
+    g_registrationMode.store(true);
+    g_pendingDevicePath[0] = L'\0';
+    g_registeredDevicePath[0] = L'\0';
+    g_registeredHardwareId.clear();
+
+    // 重置状态机/统计相关状态
+    g_lastRegisteredMoveTime.store(0);
+    g_cooldownUntil.store(0);
+    g_lockState.store(LockState::IDLE);
+    g_blockingMouse.store(false);
+    g_otherMouseActive.store(false);
+    g_extraInfoValid.store(false);
+    g_moveCount = 0;
+    g_lastRawX = 0;
+    g_lastRawY = 0;
+
+    printf("[REGISTER] Move the mouse you want to register...\n\n");
+    fflush(stdout);
 }
 
 // ========== 低级鼠标钩子 ==========
@@ -519,8 +585,120 @@ bool CreateOrUpdateSensProfile(std::string& content, double outputDpi, std::stri
     return true;
 }
 
+// 删除 devices 数组中映射到 sens_registered_mouse 的旧设备：
+// - 若 currentHardwareId 非空：删除所有 profile==sens_registered_mouse 且 id!=currentHardwareId 的设备；
+//   同时若存在重复 currentHardwareId 条目，仅保留第一个。
+// - 若 currentHardwareId 为空：删除所有 profile==sens_registered_mouse 的设备。
+bool RemoveOldSensDeviceMappings(std::string& content, const std::string& currentHardwareId) {
+    size_t arrStart = 0, arrEnd = 0;
+    if (!FindJsonArrayRange(content, "devices", arrStart, arrEnd)) {
+        // 没有 devices 数组，视为无需清理
+        return true;
+    }
+
+    // 转义 currentHardwareId 以匹配 settings.json 中的 id 字段（反斜杠在 JSON 中被转义为 \\\\）
+    std::string escapedCurrentId;
+    if (!currentHardwareId.empty()) {
+        for (size_t i = 0; i < currentHardwareId.size(); ++i) {
+            if (currentHardwareId[i] == '\\') {
+                escapedCurrentId += "\\\\";
+            } else {
+                escapedCurrentId += currentHardwareId[i];
+            }
+        }
+    }
+
+    struct EraseRange { size_t start; size_t end; };
+    std::vector<EraseRange> removals;
+
+    bool keptCurrent = false;
+    size_t search = arrStart;
+    while (true) {
+        size_t objStart = 0, objEnd = 0;
+        if (!FindNextJsonObject(content, search, arrEnd, objStart, objEnd)) break;
+
+        std::string obj = content.substr(objStart, objEnd - objStart + 1);
+        std::string profile;
+        if (!ExtractJsonStringField(obj, "profile", profile) || profile != SENS_PROFILE_NAME) {
+            search = objEnd + 1;
+            continue;
+        }
+
+        std::string devId;
+        ExtractJsonStringField(obj, "id", devId);
+
+        bool shouldRemove = false;
+        if (currentHardwareId.empty()) {
+            shouldRemove = true;
+        } else if (devId != escapedCurrentId) {
+            shouldRemove = true;
+        } else {
+            // devId == escapedCurrentId
+            if (keptCurrent) {
+                // 同一设备的重复条目，仅保留第一个
+                shouldRemove = true;
+            } else {
+                keptCurrent = true;
+            }
+        }
+
+        if (shouldRemove) {
+            size_t removeStart = objStart;
+            size_t removeEnd = objEnd;
+
+            // 优先吞掉"前置逗号 + 空白"，否则吞掉"后置逗号 + 空白"
+            while (removeStart > (arrStart + 1) &&
+                   std::isspace(static_cast<unsigned char>(content[removeStart - 1]))) {
+                removeStart--;
+            }
+
+            if (removeStart > (arrStart + 1) && content[removeStart - 1] == ',') {
+                removeStart--; // 吞掉前置逗号
+                while (removeStart > (arrStart + 1) &&
+                       std::isspace(static_cast<unsigned char>(content[removeStart - 1]))) {
+                    removeStart--;
+                }
+            } else {
+                size_t pos = removeEnd + 1;
+                while (pos < content.size() &&
+                       std::isspace(static_cast<unsigned char>(content[pos]))) {
+                    pos++;
+                }
+                if (pos < content.size() && pos <= arrEnd && content[pos] == ',') {
+                    removeEnd = pos; // 吞掉后置逗号
+                    size_t pos2 = removeEnd + 1;
+                    while (pos2 < content.size() &&
+                           std::isspace(static_cast<unsigned char>(content[pos2]))) {
+                        pos2++;
+                    }
+                    if (pos2 > removeEnd + 1) {
+                        removeEnd = pos2 - 1; // 也吞掉逗号后的空白，避免留下多余空行/缩进
+                    }
+                }
+            }
+
+            removals.push_back({removeStart, removeEnd});
+        }
+
+        search = objEnd + 1;
+    }
+
+    for (auto it = removals.rbegin(); it != removals.rend(); ++it) {
+        if (it->end >= it->start && it->end < content.size()) {
+            content.erase(it->start, it->end - it->start + 1);
+        }
+    }
+
+    return true;
+}
+
 // 在devices数组中添加或更新设备映射
 bool AddOrUpdateDeviceMapping(std::string& content, const std::string& hardwareId, std::string& errorMsg) {
+    // 先清理旧映射，避免多个设备共享同一 sens_registered_mouse profile 导致"调一个全都变"
+    if (!RemoveOldSensDeviceMappings(content, hardwareId)) {
+        errorMsg = "failed to remove old sens_registered_mouse device mappings";
+        return false;
+    }
     size_t arrStart, arrEnd;
     if (!FindJsonArrayRange(content, "devices", arrStart, arrEnd)) {
         errorMsg = "devices array not found";
@@ -992,7 +1170,8 @@ int main() {
     printf("Controls:\n");
     printf("  Y / N     - Register or skip mouse device (in registration mode)\n");
     printf("  L         - Set sensitivity for registered mouse (0.001x - 100x)\n");
-    printf("  Caps Lock - Toggle auto-click feature\n");
+    printf("  P         - Toggle auto-click feature\n");
+    printf("  Caps Lock - Double-press to full reset\n");
     printf("  Q         - Quit\n");
     printf("\n");
 
@@ -1018,8 +1197,7 @@ int main() {
     printf("[REGISTER] Move the mouse you want to register...\n\n");
 
     // 主循环
-    bool lastCapsState = (GetKeyState(VK_CAPITAL) & 0x0001) != 0;
-    g_featureEnabled.store(lastCapsState);
+    g_featureEnabled.store(false);
 
     while (g_running.load()) {
         // 检查按键
@@ -1039,6 +1217,18 @@ int main() {
                 continue;
             }
 
+            // 自动按左键功能开关（P）
+            if (ch == 'p' || ch == 'P') {
+                bool enabled = !g_featureEnabled.load();
+                g_featureEnabled.store(enabled);
+                if (!enabled) {
+                    ReleaseToIdle();
+                }
+                printf("\n[AUTO-CLICK] %s\n", enabled ? "ENABLED" : "DISABLED");
+                fflush(stdout);
+                continue;
+            }
+
             // 注册模式下的按键处理
             if (g_registrationMode.load()) {
                 HANDLE pending = g_pendingDevice.load();
@@ -1054,6 +1244,17 @@ int main() {
                     wcscpy_s(g_registeredDevicePath, g_pendingDevicePath);
                     g_registeredHardwareId = DevicePathToHardwareId(g_registeredDevicePath);
 
+                    // 注册新鼠标时：清理 settings.json 中所有其他映射到 sens_registered_mouse 的设备，
+                    // 只保留当前注册设备（若当前设备此前不存在映射，则清理后将不再保留任何旧映射）。
+                    if (!g_registeredHardwareId.empty()) {
+                        std::string content;
+                        if (ReadFileContent(SETTINGS_FILE, content)) {
+                            if (RemoveOldSensDeviceMappings(content, g_registeredHardwareId)) {
+                                WriteFileContent(SETTINGS_FILE, content);
+                            }
+                        }
+                    }
+
                     printf("\n[OK] Mouse registered: 0x%p\n", pending);
                     if (g_registeredDevicePath[0] != L'\0') {
                         wprintf(L"[PATH] %ls\n", g_registeredDevicePath);
@@ -1063,7 +1264,7 @@ int main() {
                     } else {
                         printf("[WARN] Could not extract hardware ID from device path.\n");
                     }
-                    printf("[OK] Monitoring started. Press L to adjust sensitivity.\n\n");
+                    printf("[OK] Monitoring started. Press P to toggle auto-click, L to adjust sensitivity.\n\n");
                     fflush(stdout);
                 } else if (ch == 'n' || ch == 'N') {
                     // 跳过当前设备，继续检测
@@ -1076,25 +1277,24 @@ int main() {
             }
         }
 
+        // 双击 Caps Lock 检测（500ms 时间窗）
+        // GetAsyncKeyState 低位：自上次调用后是否按下过该键（边沿事件）
+        static DWORD s_lastCapsPressTick = 0;
+        if (GetAsyncKeyState(VK_CAPITAL) & 0x0001) {
+            DWORD now = GetTickCount();
+            const DWORD kCapsDoublePressWindowMs = 500;
+            if (s_lastCapsPressTick != 0 && (DWORD)(now - s_lastCapsPressTick) <= kCapsDoublePressWindowMs) {
+                s_lastCapsPressTick = 0;
+                PerformFullReset();
+                continue;
+            }
+            s_lastCapsPressTick = now;
+        }
+
         // 注册模式下只处理按键，跳过其他逻辑
         if (g_registrationMode.load()) {
             Sleep(10);
             continue;
-        }
-
-        // 检测 Caps Lock 状态变化
-        bool currentCapsState = (GetKeyState(VK_CAPITAL) & 0x0001) != 0;
-        if (currentCapsState != lastCapsState) {
-            lastCapsState = currentCapsState;
-            g_featureEnabled.store(currentCapsState);
-
-            if (currentCapsState) {
-                printf("\n[AUTO-CLICK] ENABLED\n");
-            } else {
-                // 功能关闭时释放
-                ReleaseToIdle();
-                printf("\n[AUTO-CLICK] DISABLED\n");
-            }
         }
 
         // 状态机：检查是否需要从 LOCKED 转换到 UNLOCKABLE
