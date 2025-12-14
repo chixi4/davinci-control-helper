@@ -77,6 +77,7 @@ std::queue<std::string> g_evtQueue;
 // Registration scan accumulator (IPC mode auto-register)
 std::mutex g_scanMutex;
 std::unordered_map<HANDLE, float> g_scanAccum;
+float g_scanTotalAccum = 0.0f;
 std::atomic<HANDLE> g_lastScanEmitDevice(nullptr);
 std::atomic<DWORD> g_lastScanEmitTick(0);
 
@@ -542,6 +543,7 @@ void PerformFullReset() {
     {
         std::lock_guard<std::mutex> lock(g_scanMutex);
         g_scanAccum.clear();
+        g_scanTotalAccum = 0.0f;
         g_lastScanEmitDevice.store(nullptr);
         g_lastScanEmitTick.store(0);
     }
@@ -1429,14 +1431,28 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
                         const float kScanThreshold = 2000.0f;
                         const DWORD kScanEmitIntervalMs = 10;
-                        float currentProgress = 0.0f;
+                        float totalProgress = 0.0f;
+                        HANDLE winnerDevice = deviceHandle;
 
                         {
                             std::lock_guard<std::mutex> lock(g_scanMutex);
                             float& acc = g_scanAccum[deviceHandle];
                             acc += delta;
-                            currentProgress = (acc / kScanThreshold) * 100.0f;
-                            if (currentProgress > 100.0f) currentProgress = 100.0f;
+                            g_scanTotalAccum += delta;
+
+                            totalProgress = (g_scanTotalAccum / kScanThreshold) * 100.0f;
+                            if (totalProgress > 100.0f) totalProgress = 100.0f;
+
+                            if (totalProgress >= 100.0f) {
+                                float bestAcc = acc;
+                                winnerDevice = deviceHandle;
+                                for (const auto& kv : g_scanAccum) {
+                                    if (kv.second > bestAcc) {
+                                        bestAcc = kv.second;
+                                        winnerDevice = kv.first;
+                                    }
+                                }
+                            }
                         }
 
                         const DWORD now = GetTickCount();
@@ -1444,30 +1460,30 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                         HANDLE lastDev = g_lastScanEmitDevice.load();
                         const bool deviceChanged = (lastDev != deviceHandle);
 
-                        bool shouldEmit = (currentProgress >= 100.0f || lastEmit == 0 || deviceChanged ||
+                        bool shouldEmit = (totalProgress >= 100.0f || lastEmit == 0 || deviceChanged ||
                                            (now - lastEmit) >= kScanEmitIntervalMs);
 
                         if (shouldEmit) {
                             g_lastScanEmitTick.store(now);
                             g_lastScanEmitDevice.store(deviceHandle);
                             char buf[64] = {0};
-                            snprintf(buf, sizeof(buf), "EVT SCAN_PROGRESS %.2f", currentProgress);
+                            snprintf(buf, sizeof(buf), "EVT SCAN_PROGRESS %.2f", totalProgress);
                             QueueEvent(buf);
 
                             // 立即 flush：确保首次/换设备时 UI 立刻看到反馈（避免“要晃两下”）
-                            if ((lastEmit == 0 || deviceChanged) && currentProgress > 0.0f) {
+                            if ((lastEmit == 0 || deviceChanged) && totalProgress > 0.0f) {
                                 FlushEvents();
                             }
                         }
 
-                        if (currentProgress >= 100.0f) {
+                        if (totalProgress >= 100.0f) {
                             bool expected = true;
                             if (!g_registrationMode.compare_exchange_strong(expected, false)) {
                                 return 0;
                             }
 
-                            g_registeredDevice.store(deviceHandle);
-                            GetDeviceHidPath(deviceHandle, g_registeredDevicePath, sizeof(g_registeredDevicePath)/sizeof(wchar_t));
+                            g_registeredDevice.store(winnerDevice);
+                            GetDeviceHidPath(winnerDevice, g_registeredDevicePath, sizeof(g_registeredDevicePath)/sizeof(wchar_t));
                             g_registeredHardwareId = DevicePathToHardwareId(g_registeredDevicePath);
 
                             if (!g_registeredHardwareId.empty() && !g_settingsPath.empty()) {
