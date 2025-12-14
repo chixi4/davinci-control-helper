@@ -177,6 +177,17 @@ void FailsafeCleanup() {
     g_blockingMouse.store(false);
     g_lockState.store(LockState::IDLE);
     UninstallMouseHook();
+
+    // 退出时恢复鼠标灵敏度：清理 settings.json 中的设备映射
+    std::string content;
+    if (ReadFileContent(SETTINGS_FILE, content)) {
+        if (RemoveOldSensDeviceMappings(content, std::string())) {
+            if (WriteFileContent(SETTINGS_FILE, content)) {
+                printf("\n[EXIT] Restored mouse sensitivity (cleared device mappings)\n");
+                RunWriterExe();  // 应用配置
+            }
+        }
+    }
 }
 
 // 双击 Caps Lock 触发的完整重置：
