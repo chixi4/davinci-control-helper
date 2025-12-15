@@ -493,6 +493,11 @@ void FailsafeCleanup() {
         return;
     }
 
+    // Ensure the auto-click feature is fully disabled before restoring sensitivity.
+    g_featureEnabled.store(false);
+    g_powerEnabled.store(false);
+    ReleaseToIdle();
+
     bool wasDown = g_isMouseDown.exchange(false);
     if (wasDown) {
         MouseLeftUp();
@@ -999,6 +1004,38 @@ bool ExtractJsonStringField(const std::string& obj, const std::string& field, st
     return true;
 }
 
+// 从JSON对象中提取数字字段值
+bool ExtractJsonNumberField(const std::string& obj, const std::string& field, double& value) {
+    std::string key = "\"" + field + "\"";
+    size_t pos = obj.find(key);
+    if (pos == std::string::npos) return false;
+
+    pos = obj.find(':', pos);
+    if (pos == std::string::npos) return false;
+    pos++;
+
+    while (pos < obj.size() && std::isspace(static_cast<unsigned char>(obj[pos]))) pos++;
+
+    size_t end = pos;
+    while (end < obj.size() &&
+           (std::isdigit(static_cast<unsigned char>(obj[end])) ||
+            obj[end] == '-' || obj[end] == '+' ||
+            obj[end] == '.' || obj[end] == 'e' || obj[end] == 'E')) {
+        end++;
+    }
+
+    if (end == pos) return false;
+
+    const std::string numberStr = obj.substr(pos, end - pos);
+    char* endPtr = nullptr;
+    errno = 0;
+    const double parsed = std::strtod(numberStr.c_str(), &endPtr);
+    if (endPtr == numberStr.c_str() || errno != 0) return false;
+
+    value = parsed;
+    return true;
+}
+
 // 替换JSON中的数字字段值
 bool ReplaceJsonNumberField(std::string& content, const std::string& field, double value) {
     std::string key = "\"" + field + "\"";
@@ -1029,6 +1066,43 @@ bool ReplaceJsonNumberField(std::string& content, const std::string& field, doub
 
     content.replace(pos, end - pos, ss.str());
     return true;
+}
+
+static bool TryLoadSensitivityFromSettings(double& outMultiplier) {
+    if (g_settingsPath.empty()) return false;
+
+    std::lock_guard<std::mutex> lock(g_settingsMutex);
+
+    std::string content;
+    if (!ReadFileContent(g_settingsPath.c_str(), content)) return false;
+
+    size_t arrStart = 0, arrEnd = 0;
+    if (!FindJsonArrayRange(content, "profiles", arrStart, arrEnd)) return false;
+
+    size_t search = arrStart;
+    while (true) {
+        size_t objStart = 0, objEnd = 0;
+        if (!FindNextJsonObject(content, search, arrEnd, objStart, objEnd)) break;
+
+        std::string obj = content.substr(objStart, objEnd - objStart + 1);
+        std::string name;
+        if (!ExtractJsonStringField(obj, "name", name) || name != SENS_PROFILE_NAME) {
+            search = objEnd + 1;
+            continue;
+        }
+
+        double outputDpi = 0.0;
+        if (!ExtractJsonNumberField(obj, "Output DPI", outputDpi)) return false;
+
+        double multiplier = outputDpi / 1000.0;
+        if (multiplier < 0.001) multiplier = 0.001;
+        if (multiplier > 100.0) multiplier = 100.0;
+
+        outMultiplier = multiplier;
+        return true;
+    }
+
+    return false;
 }
 
 // 复制profile并修改Output DPI
@@ -1845,6 +1919,14 @@ int main(int argc, char** argv) {
         g_statePath = dir + "registered_mouse.txt";
     }
 
+    // Restore last used sensitivity from settings.json profile (portable persistence).
+    {
+        double restoredSensitivity = 0.0;
+        if (TryLoadSensitivityFromSettings(restoredSensitivity)) {
+            g_currentSensitivity = restoredSensitivity;
+        }
+    }
+
     const bool restored = TryRestoreLastRegisteredMouse();
 
     // CLI mode has no separate "power" toggle; keep it enabled for existing behavior.
@@ -1853,6 +1935,11 @@ int main(int argc, char** argv) {
     } else {
         StartIpcStdinThread();
         QueueEvent("EVT READY");
+        {
+            char buf[64] = {0};
+            snprintf(buf, sizeof(buf), "EVT SENS_APPLIED %.3f", g_currentSensitivity);
+            QueueEvent(buf);
+        }
         if (restored && !g_registeredHardwareId.empty()) {
             QueueEvent("EVT SCAN_PROGRESS 100.0");
             QueueEvent(std::string("EVT REGISTERED ") + g_registeredHardwareId);

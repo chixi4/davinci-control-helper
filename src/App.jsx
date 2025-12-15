@@ -113,9 +113,10 @@ const fromSplitScale = (value) => {
 
 export default function App() {
   // --- 核心状态 ---
+  // INIT: Tauri 启动阶段（等待后端快照，避免已注册设备时闪过 SCAN）
   // SCAN: 注册/绑定鼠标界面
   // DASHBOARD: 主控制界面
-  const [phase, setPhase] = useState('SCAN');
+  const [phase, setPhase] = useState(isTauri ? 'INIT' : 'SCAN');
   const [scanInputReady, setScanInputReady] = useState(false);
   
   // 灵敏度：对应 CLI 中的 'l' 命令设置的值
@@ -151,10 +152,12 @@ export default function App() {
   const syncTimer = useRef(null);
   const isFirstRender = useRef(true);
   const pendingSensitivity = useRef(null);
+  const skipNextSensitivitySend = useRef(false);
   const pendingPower = useRef(null);
   const pendingExit = useRef(null);
   const isCrosshairActiveRef = useRef(false);
   const mouseStatusRef = useRef('OFF');
+  const phaseRef = useRef(phase);
   
   // 记忆功能：用于在重新开启鼠标开关时，恢复上次的瞄准镜状态
   const crosshairMemory = useRef(false);
@@ -182,6 +185,10 @@ export default function App() {
     mouseStatusRef.current = mouseStatus;
   }, [mouseStatus]);
 
+  useEffect(() => {
+    phaseRef.current = phase;
+  }, [phase]);
+
   // Tauri 后端事件桥接：用本地 backend 驱动 UI 状态（扫描/开火/报错等）
   useEffect(() => {
     if (!isTauri) return;
@@ -190,6 +197,13 @@ export default function App() {
 
     (async () => {
       try {
+        try {
+          const uiState = await tauriInvoke('ui_load_state');
+          if (uiState && typeof uiState.crosshairMemory === 'boolean') {
+            crosshairMemory.current = uiState.crosshairMemory;
+          }
+        } catch {}
+
         unlisten = await tauriListen('backend_event', (event) => {
           const payload = event?.payload || {};
           const kind = payload.kind;
@@ -200,7 +214,11 @@ export default function App() {
           if (kind === 'SCAN_PROGRESS') {
             const v = Number.parseFloat(raw);
             if (!Number.isFinite(v)) return;
-            setShakeProgress(Math.max(0, Math.min(100, v)));
+            const next = Math.max(0, Math.min(100, v));
+            setShakeProgress(next);
+            if (phaseRef.current === 'INIT' && next < 100) {
+              setPhase('SCAN');
+            }
             return;
           }
 
@@ -292,13 +310,18 @@ export default function App() {
 
           if (kind === 'SENS_APPLIED') {
             const v = Number.parseFloat(raw);
+            if (!Number.isFinite(v)) return;
+
             const pending = pendingSensitivity.current;
             if (pending == null) {
+              const next = Math.max(0.01, Math.min(5.0, v));
+              skipNextSensitivitySend.current = true;
+              setSensitivity(next);
               setIsSyncing(false);
               return;
             }
 
-            if (Number.isFinite(v) && Math.abs(v - pending) < 0.02) {
+            if (Math.abs(v - pending) < 0.02) {
               pendingSensitivity.current = null;
               setIsSyncing(false);
             }
@@ -352,6 +375,11 @@ export default function App() {
   useEffect(() => {
     if (isFirstRender.current) {
       isFirstRender.current = false;
+      return;
+    }
+
+    if (skipNextSensitivitySend.current) {
+      skipNextSensitivitySend.current = false;
       return;
     }
 
@@ -508,6 +536,7 @@ export default function App() {
       }, 1000);
     } else if (mouseStatus === 'ON') {
       crosshairMemory.current = isCrosshairActive;
+      tauriInvoke('ui_save_state', { state: { crosshairMemory: crosshairMemory.current } }).catch(() => {});
 
       mouseStatusRef.current = 'SHUTTING_DOWN';
       setMouseStatus('SHUTTING_DOWN');
@@ -689,6 +718,8 @@ export default function App() {
                   return;
                 }
 
+                tauriInvoke('ui_save_state', { state: { crosshairMemory: crosshairMemory.current } }).catch(() => {});
+
                 let finished = false;
                 const timeoutId = window.setTimeout(() => {
                   if (finished) return;
@@ -722,7 +753,7 @@ export default function App() {
         {/* 状态发光边框 */}
         <div 
           className={`absolute inset-0 pointer-events-none z-50 border-[6px] transition-all duration-300 rounded-xl
-            ${phase === 'SCAN' ? 'border-transparent' : ''}
+            ${phase === 'SCAN' || phase === 'INIT' ? 'border-transparent' : ''}
             ${phase === 'DASHBOARD' && !isCrosshairActive ? 'border-zinc-800/50' : ''}
             ${phase === 'DASHBOARD' && isCrosshairActive && !isFiring ? 'border-amber-500/60 animate-pulse shadow-[inset_0_0_30px_rgba(245,158,11,0.2)]' : ''}
             ${phase === 'DASHBOARD' && isCrosshairActive && isFiring ? 'border-emerald-500 shadow-[inset_0_0_60px_rgba(16,185,129,0.4)] scale-[0.995]' : ''}
@@ -761,6 +792,23 @@ export default function App() {
         <div className="relative z-10 w-full h-full flex items-center justify-center p-4">
           <AnimatePresence mode="wait">
             
+            {/* --- Phase 0: INIT (避免已注册时闪过注册界面) --- */}
+            {phase === 'INIT' && (
+              <motion.div
+                key="init"
+                initial={{ opacity: 0, scale: 0.95, filter: "blur(8px)" }}
+                animate={{ opacity: 1, scale: 1, filter: "blur(0px)" }}
+                exit={{ opacity: 0, scale: 0.95, filter: "blur(8px)" }}
+                transition={{ duration: 0.25, ease: "easeOut" }}
+                className="relative flex flex-col items-center"
+              >
+                <Loader2 size={44} className="text-zinc-500 animate-spin" />
+                <div className="mt-8 text-zinc-600 text-xs tracking-[0.2em] font-bold">
+                  INITIALIZING...
+                </div>
+              </motion.div>
+            )}
+
             {/* --- Phase 1: 扫描/注册界面 --- */}
             {/* 逻辑：等待鼠标移动数据累积到 100% */}
             {phase === 'SCAN' && (
@@ -786,7 +834,7 @@ export default function App() {
                          strokeDashoffset: 792 - (792 * shakeProgress / 100),
                          stroke: shakeProgress > 50 ? "#3b82f6" : "#71717a"
                        }}
-                       transition={{ type: "spring", stiffness: 60, damping: 15 }}
+                       transition={{ type: "tween", duration: 0.03, ease: "linear" }}
                      />
                    </svg>
                    <motion.div 
@@ -962,6 +1010,8 @@ export default function App() {
                         onClick={() => {
                            if (!isMouseActive) return;
                            const next = !isCrosshairActive;
+                           crosshairMemory.current = next;
+                           tauriInvoke('ui_save_state', { state: { crosshairMemory: next } }).catch(() => {});
                            isCrosshairActiveRef.current = next;
                            setIsCrosshairActive(next);
                            setIsFiring(false);

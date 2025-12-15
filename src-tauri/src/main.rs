@@ -1,6 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{
   io::{BufRead, BufReader, Write},
   path::PathBuf,
@@ -22,6 +22,7 @@ struct BackendSnapshot {
   input_ready: bool,
   scan_progress_raw: Option<String>,
   registered_raw: Option<String>,
+  sens_applied_raw: Option<String>,
 }
 
 #[derive(Default)]
@@ -33,6 +34,12 @@ struct BackendState {
 }
 
 type SharedBackendState = Arc<Mutex<BackendState>>;
+
+#[derive(Serialize, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+struct UiState {
+  crosshair_memory: bool,
+}
 
 #[derive(Serialize, Clone)]
 struct BackendEvent {
@@ -71,6 +78,22 @@ fn resolve_monitor_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
   }
 
   Err("could not find `mouse_monitor.exe` (build it and place it next to the app)".to_string())
+}
+
+fn resolve_ui_state_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+  // Prefer portable behavior: store next to the Tauri executable.
+  if let Ok(exe) = std::env::current_exe() {
+    if let Some(dir) = exe.parent() {
+      return Ok(dir.join("ui_state.json"));
+    }
+  }
+
+  // Fallback: app config dir (should be writable on most systems).
+  if let Some(dir) = app.path_resolver().app_config_dir() {
+    return Ok(dir.join("ui_state.json"));
+  }
+
+  Err("could not resolve ui state path".to_string())
 }
 
 fn spawn_monitor(app: tauri::AppHandle, state: SharedBackendState) -> Result<(), String> {
@@ -166,6 +189,7 @@ fn update_snapshot(snapshot: &mut BackendSnapshot, evt: &BackendEvent) {
     "INPUT_READY" => snapshot.input_ready = true,
     "SCAN_PROGRESS" => snapshot.scan_progress_raw = Some(raw),
     "REGISTERED" => snapshot.registered_raw = Some(raw),
+    "SENS_APPLIED" => snapshot.sens_applied_raw = Some(raw),
     _ => {}
   }
 }
@@ -186,6 +210,16 @@ fn emit_snapshot(app: &tauri::AppHandle, snapshot: BackendSnapshot) {
       "backend_event",
       BackendEvent {
         kind: "SCAN_PROGRESS".to_string(),
+        data: serde_json::json!({ "raw": raw }),
+      },
+    );
+  }
+
+  if let Some(raw) = snapshot.sens_applied_raw {
+    let _ = app.emit_all(
+      "backend_event",
+      BackendEvent {
+        kind: "SENS_APPLIED".to_string(),
         data: serde_json::json!({ "raw": raw }),
       },
     );
@@ -263,6 +297,28 @@ fn parse_monitor_line(line: &str) -> Option<BackendEvent> {
 }
 
 #[tauri::command]
+fn ui_load_state(app: tauri::AppHandle) -> Result<UiState, String> {
+  let path = resolve_ui_state_path(&app)?;
+  let text = match std::fs::read_to_string(&path) {
+    Ok(s) => s,
+    Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(UiState::default()),
+    Err(err) => return Err(format!("failed to read ui state: {err}")),
+  };
+
+  match serde_json::from_str::<UiState>(&text) {
+    Ok(state) => Ok(state),
+    Err(_) => Ok(UiState::default()),
+  }
+}
+
+#[tauri::command]
+fn ui_save_state(app: tauri::AppHandle, state: UiState) -> Result<(), String> {
+  let path = resolve_ui_state_path(&app)?;
+  let text = serde_json::to_string_pretty(&state).map_err(|e| format!("failed to serialize ui state: {e}"))?;
+  std::fs::write(&path, text).map_err(|e| format!("failed to write ui state: {e}"))
+}
+
+#[tauri::command]
 fn backend_init(app: tauri::AppHandle, backend: State<'_, SharedBackendState>) -> Result<(), String> {
   let state = backend.inner().clone();
   spawn_monitor(app.clone(), state.clone())?;
@@ -325,6 +381,8 @@ fn main() {
       }
     })
     .invoke_handler(tauri::generate_handler![
+      ui_load_state,
+      ui_save_state,
       backend_init,
       backend_set_power,
       backend_set_feature,
