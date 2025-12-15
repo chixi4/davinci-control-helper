@@ -74,6 +74,15 @@ std::queue<std::string> g_cmdQueue;
 std::mutex g_evtMutex;
 std::queue<std::string> g_evtQueue;
 
+// settings.json / writer.exe serialization
+// Avoid concurrent read-modify-write between threads (main thread vs WM_INPUT thread).
+std::mutex g_settingsMutex;
+
+// Deferred settings maintenance (avoid file I/O inside WM_INPUT handler).
+std::mutex g_settingsWorkMutex;
+std::string g_pendingSettingsCleanupHardwareId;
+bool g_hasPendingSettingsCleanup = false;
+
 // Registration scan accumulator (IPC mode auto-register)
 std::mutex g_scanMutex;
 std::unordered_map<HANDLE, float> g_scanAccum;
@@ -172,6 +181,33 @@ void FlushEvents() {
     fflush(stdout);
 }
 
+static void RequestSettingsCleanupForRegisteredMouse(const std::string& hardwareId) {
+    if (hardwareId.empty()) return;
+    std::lock_guard<std::mutex> lock(g_settingsWorkMutex);
+    g_pendingSettingsCleanupHardwareId = hardwareId;
+    g_hasPendingSettingsCleanup = true;
+}
+
+static void ProcessPendingSettingsWork() {
+    std::string hardwareId;
+    {
+        std::lock_guard<std::mutex> lock(g_settingsWorkMutex);
+        if (!g_hasPendingSettingsCleanup) return;
+        hardwareId = g_pendingSettingsCleanupHardwareId;
+        g_pendingSettingsCleanupHardwareId.clear();
+        g_hasPendingSettingsCleanup = false;
+    }
+
+    if (hardwareId.empty()) return;
+    if (g_settingsPath.empty()) return;
+
+    std::lock_guard<std::mutex> lock(g_settingsMutex);
+    std::string content;
+    if (!ReadFileContent(g_settingsPath.c_str(), content)) return;
+    if (!RemoveOldSensDeviceMappings(content, hardwareId)) return;
+    WriteFileContent(g_settingsPath.c_str(), content);
+}
+
 static std::string ToUpperAscii(std::string s) {
     for (char& c : s) {
         c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
@@ -216,15 +252,19 @@ bool ApplySensitivityMultiplier(double multiplier, std::string& errorMsg) {
         return false;
     }
 
-    std::string updateErr;
-    if (!UpdateSettingsForDevice(g_registeredHardwareId, multiplier, updateErr)) {
-        errorMsg = updateErr;
-        return false;
-    }
+    {
+        std::lock_guard<std::mutex> lock(g_settingsMutex);
 
-    if (!RunWriterExe()) {
-        errorMsg = "writer.exe failed";
-        return false;
+        std::string updateErr;
+        if (!UpdateSettingsForDevice(g_registeredHardwareId, multiplier, updateErr)) {
+            errorMsg = updateErr;
+            return false;
+        }
+
+        if (!RunWriterExe()) {
+            errorMsg = "writer.exe failed";
+            return false;
+        }
     }
 
     g_currentSensitivity = multiplier;
@@ -236,6 +276,8 @@ bool RestoreDefaultSensitivity(std::string& errorMsg) {
         errorMsg = "settings path not set";
         return false;
     }
+
+    std::lock_guard<std::mutex> lock(g_settingsMutex);
 
     std::string content;
     if (!ReadFileContent(g_settingsPath.c_str(), content)) {
@@ -461,6 +503,7 @@ void FailsafeCleanup() {
     UninstallMouseHook();
 
     // 退出时恢复鼠标灵敏度：清理 settings.json 中的设备映射
+    std::lock_guard<std::mutex> lock(g_settingsMutex);
     std::string content;
     if (ReadFileContent(g_settingsPath.c_str(), content)) {
         if (RemoveOldSensDeviceMappings(content, std::string())) {
@@ -489,8 +532,6 @@ void PerformFullReset() {
     if (ipc) {
         g_powerEnabled.store(false);
     }
-
-    std::string hardwareId = g_registeredHardwareId; // 先拷贝，后面会清空注册信息
 
     // 关闭自动按键功能并确保释放
     g_featureEnabled.store(false);
@@ -539,6 +580,7 @@ void PerformFullReset() {
 
     // 清理 settings.json 中映射到 sens_registered_mouse 的设备，避免残留映射影响其他鼠标
     {
+        std::lock_guard<std::mutex> lock(g_settingsMutex);
         std::string content;
         if (ReadFileContent(g_settingsPath.c_str(), content)) {
             if (RemoveOldSensDeviceMappings(content, std::string())) {
@@ -1424,16 +1466,19 @@ void HandleSensitivityInput() {
     printf("[SENS] Applying %.3fx sensitivity for device: %s\n", multiplier, g_registeredHardwareId.c_str());
 
     std::string errorMsg;
-    if (!UpdateSettingsForDevice(g_registeredHardwareId, multiplier, errorMsg)) {
-        printf("[ERROR] Failed to update settings: %s\n", errorMsg.c_str());
-        return;
-    }
+    {
+        std::lock_guard<std::mutex> lock(g_settingsMutex);
+        if (!UpdateSettingsForDevice(g_registeredHardwareId, multiplier, errorMsg)) {
+            printf("[ERROR] Failed to update settings: %s\n", errorMsg.c_str());
+            return;
+        }
 
-    printf("[SENS] Running writer.exe to apply configuration...\n");
-    if (!RunWriterExe()) {
-        printf("[WARN] writer.exe may have failed. Check if RawAccel is running.\n");
-    } else {
-        printf("[SENS] Configuration applied successfully!\n");
+        printf("[SENS] Running writer.exe to apply configuration...\n");
+        if (!RunWriterExe()) {
+            printf("[WARN] writer.exe may have failed. Check if RawAccel is running.\n");
+        } else {
+            printf("[SENS] Configuration applied successfully!\n");
+        }
     }
 
     g_currentSensitivity = multiplier;
@@ -1533,13 +1578,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                             GetDeviceHidPath(winnerDevice, g_registeredDevicePath, sizeof(g_registeredDevicePath)/sizeof(wchar_t));
                             g_registeredHardwareId = DevicePathToHardwareId(g_registeredDevicePath);
 
-                            if (!g_registeredHardwareId.empty() && !g_settingsPath.empty()) {
-                                std::string content;
-                                if (ReadFileContent(g_settingsPath.c_str(), content)) {
-                                    if (RemoveOldSensDeviceMappings(content, g_registeredHardwareId)) {
-                                        WriteFileContent(g_settingsPath.c_str(), content);
-                                    }
-                                }
+                            if (!g_registeredHardwareId.empty()) {
+                                RequestSettingsCleanupForRegisteredMouse(g_registeredHardwareId);
                             }
 
                             if (!g_registeredHardwareId.empty()) {
@@ -1886,6 +1926,8 @@ int main(int argc, char** argv) {
             ProcessIpcCommands();
         }
 
+        ProcessPendingSettingsWork();
+
         // 检查按键
         if (!g_ipcMode.load() && _kbhit()) {
             char ch = _getch();
@@ -1936,6 +1978,7 @@ int main(int argc, char** argv) {
                     // 注册新鼠标时：清理 settings.json 中所有其他映射到 sens_registered_mouse 的设备，
                     // 只保留当前注册设备（若当前设备此前不存在映射，则清理后将不再保留任何旧映射）。
                     if (!g_registeredHardwareId.empty()) {
+                        std::lock_guard<std::mutex> lock(g_settingsMutex);
                         std::string content;
                         if (ReadFileContent(g_settingsPath.c_str(), content)) {
                             if (RemoveOldSensDeviceMappings(content, g_registeredHardwareId)) {
