@@ -479,12 +479,14 @@ void FailsafeCleanup() {
 // - 关闭自动按左键功能并释放按键
 // - 取消注册设备，回到注册模式
 void PerformFullReset() {
-    if (!g_ipcMode.load()) {
+    const bool ipc = g_ipcMode.load();
+
+    if (!ipc) {
         printf("\n[RESET] Full reset triggered (Caps Lock double-press)\n");
         fflush(stdout);
     }
 
-    if (g_ipcMode.load()) {
+    if (ipc) {
         g_powerEnabled.store(false);
     }
 
@@ -497,63 +499,113 @@ void PerformFullReset() {
     // 恢复灵敏为 1.0（程序内状态）
     g_currentSensitivity = 1.0;
 
+    // IPC 模式：先切回注册/SCAN 状态并立即发 EVT，避免 reset 的耗时操作阻塞首次进度上报
+    if (ipc) {
+        // 取消注册并回到注册模式
+        g_registeredDevice.store(NULL);
+        g_pendingDevice.store(NULL);
+        g_registrationMode.store(true);
+        g_pendingDevicePath[0] = L'\0';
+        g_registeredDevicePath[0] = L'\0';
+        g_registeredHardwareId.clear();
+        ClearLastRegisteredHardwareId();
+
+        // 重置状态机/统计相关状态
+        g_lastRegisteredMoveTime.store(0);
+        g_cooldownUntil.store(0);
+        g_lockState.store(LockState::IDLE);
+        g_blockingMouse.store(false);
+        g_otherMouseActive.store(false);
+        g_extraInfoValid.store(false);
+        g_moveCount = 0;
+        g_lastRawX = 0;
+        g_lastRawY = 0;
+
+        {
+            std::lock_guard<std::mutex> lock(g_scanMutex);
+            g_scanAccum.clear();
+            g_scanTotalAccum = 0.0f;
+            g_lastScanEmitDevice.store(nullptr);
+            g_lastScanEmitTick.store(0);
+        }
+
+        QueueEvent("EVT SCAN_PROGRESS 0.0");
+        QueueEvent("EVT SENS_APPLIED 1.0");
+        QueueEvent("EVT RESET");
+        QueueEvent("EVT POWER OFF");
+        QueueEvent("EVT FEATURE OFF");
+        FlushEvents();
+    }
+
     // 清理 settings.json 中映射到 sens_registered_mouse 的设备，避免残留映射影响其他鼠标
     {
         std::string content;
         if (ReadFileContent(g_settingsPath.c_str(), content)) {
             if (RemoveOldSensDeviceMappings(content, std::string())) {
                 if (!WriteFileContent(g_settingsPath.c_str(), content)) {
-                    printf("[RESET] [WARN] Failed to write settings.json while clearing device mappings.\n");
+                    if (!ipc) {
+                        printf("[RESET] [WARN] Failed to write settings.json while clearing device mappings.\n");
+                    }
                 } else {
-                    printf("[RESET] Cleared device mappings for profile: %s\n", SENS_PROFILE_NAME);
-                    printf("[RESET] Running writer.exe to apply configuration...\n");
+                    if (!ipc) {
+                        printf("[RESET] Cleared device mappings for profile: %s\n", SENS_PROFILE_NAME);
+                        printf("[RESET] Running writer.exe to apply configuration...\n");
+                    }
                     if (!RunWriterExe()) {
-                        printf("[RESET] [WARN] writer.exe may have failed. Check if RawAccel is running.\n");
+                        if (!ipc) {
+                            printf("[RESET] [WARN] writer.exe may have failed. Check if RawAccel is running.\n");
+                        }
                     }
                 }
             } else {
-                printf("[RESET] [WARN] Failed to clear device mappings (devices array parse failed).\n");
+                if (!ipc) {
+                    printf("[RESET] [WARN] Failed to clear device mappings (devices array parse failed).\n");
+                }
             }
         } else {
-            printf("[RESET] [WARN] Failed to read settings.json while clearing device mappings.\n");
+            if (!ipc) {
+                printf("[RESET] [WARN] Failed to read settings.json while clearing device mappings.\n");
+            }
         }
-        fflush(stdout);
+        if (!ipc) {
+            fflush(stdout);
+        }
     }
 
-    // 取消注册并回到注册模式
-    g_registeredDevice.store(NULL);
-    g_pendingDevice.store(NULL);
-    g_registrationMode.store(true);
-    g_pendingDevicePath[0] = L'\0';
-    g_registeredDevicePath[0] = L'\0';
-    g_registeredHardwareId.clear();
-    ClearLastRegisteredHardwareId();
+    if (!ipc) {
+        // 取消注册并回到注册模式
+        g_registeredDevice.store(NULL);
+        g_pendingDevice.store(NULL);
+        g_registrationMode.store(true);
+        g_pendingDevicePath[0] = L'\0';
+        g_registeredDevicePath[0] = L'\0';
+        g_registeredHardwareId.clear();
+        ClearLastRegisteredHardwareId();
 
-    // 重置状态机/统计相关状态
-    g_lastRegisteredMoveTime.store(0);
-    g_cooldownUntil.store(0);
-    g_lockState.store(LockState::IDLE);
-    g_blockingMouse.store(false);
-    g_otherMouseActive.store(false);
-    g_extraInfoValid.store(false);
-    g_moveCount = 0;
-    g_lastRawX = 0;
-    g_lastRawY = 0;
+        // 重置状态机/统计相关状态
+        g_lastRegisteredMoveTime.store(0);
+        g_cooldownUntil.store(0);
+        g_lockState.store(LockState::IDLE);
+        g_blockingMouse.store(false);
+        g_otherMouseActive.store(false);
+        g_extraInfoValid.store(false);
+        g_moveCount = 0;
+        g_lastRawX = 0;
+        g_lastRawY = 0;
 
-    {
-        std::lock_guard<std::mutex> lock(g_scanMutex);
-        g_scanAccum.clear();
-        g_scanTotalAccum = 0.0f;
-        g_lastScanEmitDevice.store(nullptr);
-        g_lastScanEmitTick.store(0);
-    }
-    QueueEvent("EVT SCAN_PROGRESS 0.0");
-    QueueEvent("EVT SENS_APPLIED 1.0");
-    QueueEvent("EVT RESET");
-    QueueEvent("EVT POWER OFF");
-    QueueEvent("EVT FEATURE OFF");
+        {
+            std::lock_guard<std::mutex> lock(g_scanMutex);
+            g_scanAccum.clear();
+            g_scanTotalAccum = 0.0f;
+            g_lastScanEmitDevice.store(nullptr);
+            g_lastScanEmitTick.store(0);
+        }
+        QueueEvent("EVT SCAN_PROGRESS 0.0");
+        QueueEvent("EVT SENS_APPLIED 1.0");
+        QueueEvent("EVT RESET");
+        QueueEvent("EVT POWER OFF");
+        QueueEvent("EVT FEATURE OFF");
 
-    if (!g_ipcMode.load()) {
         printf("[REGISTER] Move the mouse you want to register...\n\n");
         fflush(stdout);
     }
@@ -1469,11 +1521,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                             char buf[64] = {0};
                             snprintf(buf, sizeof(buf), "EVT SCAN_PROGRESS %.2f", totalProgress);
                             QueueEvent(buf);
-
-                            // 立即 flush：确保首次/换设备时 UI 立刻看到反馈（避免“要晃两下”）
-                            if ((lastEmit == 0 || deviceChanged) && totalProgress > 0.0f) {
-                                FlushEvents();
-                            }
                         }
 
                         if (totalProgress >= 100.0f) {
@@ -1502,6 +1549,11 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                                 QueueEvent("EVT NOTIFY ERR:HWID NOT FOUND");
                                 QueueEvent("EVT REGISTERED ");
                             }
+                        }
+
+                        // SCAN 阶段：确保持续输出进度，避免被主循环的耗时操作阻塞
+                        if (shouldEmit && totalProgress > 0.0f) {
+                            FlushEvents();
                         }
                     } else {
                         if (deviceHandle != g_pendingDevice.load()) {
@@ -1916,16 +1968,19 @@ int main(int argc, char** argv) {
 
         // 双击 Caps Lock 检测（500ms 时间窗）
         // GetAsyncKeyState 低位：自上次调用后是否按下过该键（边沿事件）
-        static DWORD s_lastCapsPressTick = 0;
-        if (GetAsyncKeyState(VK_CAPITAL) & 0x0001) {
-            DWORD now = GetTickCount();
-            const DWORD kCapsDoublePressWindowMs = 500;
-            if (s_lastCapsPressTick != 0 && (DWORD)(now - s_lastCapsPressTick) <= kCapsDoublePressWindowMs) {
-                s_lastCapsPressTick = 0;
-                PerformFullReset();
-                continue;
+        // IPC 模式下禁用，避免与前端触发的 RESET 命令双触发
+        if (!g_ipcMode.load()) {
+            static DWORD s_lastCapsPressTick = 0;
+            if (GetAsyncKeyState(VK_CAPITAL) & 0x0001) {
+                DWORD now = GetTickCount();
+                const DWORD kCapsDoublePressWindowMs = 500;
+                if (s_lastCapsPressTick != 0 && (DWORD)(now - s_lastCapsPressTick) <= kCapsDoublePressWindowMs) {
+                    s_lastCapsPressTick = 0;
+                    PerformFullReset();
+                    continue;
+                }
+                s_lastCapsPressTick = now;
             }
-            s_lastCapsPressTick = now;
         }
 
         // 注册模式下只处理按键，跳过其他逻辑
