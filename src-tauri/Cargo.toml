@@ -1,8 +1,8 @@
 [package]
 name = "rawaccel-monitor-gui"
-version = "0.1.0"
+version = "4.0.0"
 description = "RawAccel mouse monitor GUI"
-authors = ["you"]
+authors = ["chixi"]
 edition = "2021"
 
 [build-dependencies]

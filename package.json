@@ -1,7 +1,7 @@
 {
   "name": "rawaccel-monitor-gui",
   "private": true,
-  "version": "0.1.0",
+  "version": "4.0.0",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
