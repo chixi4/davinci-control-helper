@@ -17,6 +17,74 @@ use tauri::{Manager, State};
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::{
+  Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE},
+  System::Threading::{CreateMutexW, ReleaseMutex},
+  UI::WindowsAndMessaging::{FindWindowW, SetForegroundWindow, ShowWindow, SW_RESTORE},
+};
+
+#[cfg(target_os = "windows")]
+struct SingleInstanceGuard {
+  handle: HANDLE,
+}
+
+#[cfg(target_os = "windows")]
+impl Drop for SingleInstanceGuard {
+  fn drop(&mut self) {
+    if self.handle.is_null() {
+      return;
+    }
+    unsafe {
+      let _ = ReleaseMutex(self.handle);
+      let _ = CloseHandle(self.handle);
+    }
+  }
+}
+
+#[cfg(target_os = "windows")]
+fn to_wide_null_terminated(s: &str) -> Vec<u16> {
+  use std::os::windows::ffi::OsStrExt;
+  std::ffi::OsStr::new(s)
+    .encode_wide()
+    .chain(std::iter::once(0))
+    .collect()
+}
+
+#[cfg(target_os = "windows")]
+fn try_focus_existing_window() {
+  let title = to_wide_null_terminated("RawAccel Monitor");
+  unsafe {
+    let hwnd = FindWindowW(std::ptr::null(), title.as_ptr());
+    if !hwnd.is_null() {
+      let _ = ShowWindow(hwnd, SW_RESTORE);
+      let _ = SetForegroundWindow(hwnd);
+    }
+  }
+}
+
+#[cfg(target_os = "windows")]
+fn ensure_single_instance() -> Result<SingleInstanceGuard, ()> {
+  let mutex_name = to_wide_null_terminated("Local\\RawAccelMonitorGui_SingleInstance");
+
+  unsafe {
+    let handle = CreateMutexW(std::ptr::null(), 1, mutex_name.as_ptr());
+    if handle.is_null() {
+      return Ok(SingleInstanceGuard {
+        handle: std::ptr::null_mut(),
+      });
+    }
+
+    if GetLastError() == ERROR_ALREADY_EXISTS {
+      let _ = CloseHandle(handle);
+      try_focus_existing_window();
+      return Err(());
+    }
+
+    Ok(SingleInstanceGuard { handle })
+  }
+}
+
 #[derive(Default, Clone)]
 struct BackendSnapshot {
   input_ready: bool,
@@ -374,6 +442,12 @@ fn backend_quit(backend: State<'_, SharedBackendState>) -> Result<(), String> {
 }
 
 fn main() {
+  #[cfg(target_os = "windows")]
+  let _single_instance_guard = match ensure_single_instance() {
+    Ok(g) => g,
+    Err(()) => return,
+  };
+
   tauri::Builder::default()
     .manage(Arc::new(Mutex::new(BackendState::default())))
     .setup(|app| {
