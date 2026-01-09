@@ -120,6 +120,7 @@ export default function App() {
   
   // 同步状态：用于展示调节灵敏度时的 1秒 等待动画
   const [isSyncing, setIsSyncing] = useState(false);
+  const [resetPulse, setResetPulse] = useState(false);
   
   // 瞄准镜状态：对应 CLI 中的 'p' 键（自动按左键功能开关）
   const [isCrosshairActive, setIsCrosshairActive] = useState(false);
@@ -146,6 +147,7 @@ export default function App() {
   const lastMousePos = useRef(null);
   const debounceTimer = useRef(null);
   const syncTimer = useRef(null);
+  const resetPulseTimer = useRef(null);
   const isFirstRender = useRef(true);
   const pendingSensitivity = useRef(null);
   const skipNextSensitivitySend = useRef(false);
@@ -412,6 +414,14 @@ export default function App() {
     setIsSyncing(false);
   }, [mouseStatus]);
 
+  useEffect(() => {
+    return () => {
+      if (resetPulseTimer.current) {
+        clearTimeout(resetPulseTimer.current);
+      }
+    };
+  }, []);
+
   // --- 鼠标移动监听逻辑 ---
   useEffect(() => {
     if (isTauri) return;
@@ -507,6 +517,17 @@ export default function App() {
   }, [phase]); 
 
   const sliderPercent = fromSplitScale(sensitivity);
+  const syncActive = isSyncing || resetPulse;
+
+  const triggerResetPulse = () => {
+    if (resetPulseTimer.current) {
+      clearTimeout(resetPulseTimer.current);
+    }
+    setResetPulse(true);
+    resetPulseTimer.current = setTimeout(() => {
+      setResetPulse(false);
+    }, 600);
+  };
 
   // --- [后端注意] 左下角鼠标按钮逻辑 ---
   // 开关逻辑：
@@ -865,20 +886,24 @@ export default function App() {
                       initial={{ y: 15, opacity: 0.5, filter: 'blur(2px)' }} 
                       animate={{ y: 0, opacity: 1, filter: 'blur(0px)' }}
                       className={`relative text-7xl font-black tracking-tighter tabular-nums flex items-baseline 
-                          ${isSyncing ? 'text-amber-500' : 'text-white'}
+                          ${syncActive ? 'text-amber-500' : 'text-white'}
                       `}
                     >
                       {sensitivity.toFixed(2)}
                       
                       {/* 同步指示点：提示后端正在写入数据 */}
-                      {isSyncing && (
+                      {syncActive && (
                         <div className="absolute -right-3 top-1 w-1.5 h-1.5 bg-amber-500 rounded-full animate-ping" />
                       )}
 
                       <button
                         data-no-drag
                         onClick={() => {
-                          if (sensitivity !== 1.0) setSensitivity(1.0);
+                          if (sensitivity !== 1.0) {
+                            setSensitivity(1.0);
+                            return;
+                          }
+                          triggerResetPulse();
                         }}
                         className="absolute left-full top-1/2 -translate-y-1/2 ml-3 opacity-0 group-hover:opacity-100 transition-opacity p-1.5 hover:bg-white/5 rounded text-zinc-500 hover:text-white"
                         title="重置为 1.00"
@@ -915,14 +940,14 @@ export default function App() {
                      
                     <div className="w-full h-1 bg-white/10 rounded-full overflow-hidden">
                       <motion.div 
-                        className={`h-full transition-colors duration-500 ${isSyncing ? 'bg-amber-500' : 'bg-white/80'}`}
+                        className={`h-full transition-colors duration-500 ${syncActive ? 'bg-amber-500' : 'bg-white/80'}`}
                         style={{ width: `${sliderPercent}%` }}
                       />
                     </div>
  
                     <div className="absolute top-1/2 -translate-y-1/2 w-0.5 h-3 bg-white/15 left-1/2" />
                     <motion.div 
-                      className={`absolute h-5 w-1 shadow-[0_1px_3px_rgba(0,0,0,0.55)] pointer-events-none transition-colors duration-500 ${isSyncing ? 'bg-amber-500' : 'bg-white/90'}`}
+                      className={`absolute h-5 w-1 shadow-[0_1px_3px_rgba(0,0,0,0.55)] pointer-events-none transition-colors duration-500 ${syncActive ? 'bg-amber-500' : 'bg-white/90'}`}
                       style={{ left: `${sliderPercent}%` }}
                     />
 
