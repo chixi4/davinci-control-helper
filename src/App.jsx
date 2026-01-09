@@ -90,16 +90,6 @@ const FULLSCREEN_CONFIG = {
   }
 };
 
-const generateParticles = (count) => {
-  return Array.from({ length: count }).map((_, i) => ({
-    id: i,
-    x: Math.random() * WINDOW_WIDTH,
-    y: Math.random() * WINDOW_HEIGHT,
-    size: Math.random() * 2 + 1,
-    speed: Math.random() * 0.5 + 0.2,
-  }));
-};
-
 // 灵敏度数值转换工具（保持非线性手感）
 const toSplitScale = (position) => {
   if (position <= 50) {
@@ -516,7 +506,6 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleKey);
   }, [phase]); 
 
-  const particles = useRef(generateParticles(20));
   const sliderPercent = fromSplitScale(sensitivity);
 
   // --- [后端注意] 左下角鼠标按钮逻辑 ---
@@ -570,7 +559,7 @@ export default function App() {
 
   return (
     <div
-      className={`flex items-center justify-center w-full h-screen ${
+      className={`dark flex items-center justify-center w-full h-screen ${
         isTauri ? 'bg-transparent' : 'bg-gray-900/50'
       }`}
     >
@@ -580,11 +569,11 @@ export default function App() {
          都应该支持拖拽移动 (通过 CSS WebkitAppRegion: 'drag' 实现)。
        */}
        <div 
-         style={{ width: WINDOW_WIDTH, height: WINDOW_HEIGHT }}
-          className={`relative overflow-hidden bg-zinc-950 text-zinc-200 font-mono select-none transition-all duration-300 shadow-2xl rounded-xl border border-zinc-800
-            ${isFiring ? 'cursor-crosshair' : 'cursor-default'}
-          `}
-          onMouseDown={(e) => {
+          style={{ width: WINDOW_WIDTH, height: WINDOW_HEIGHT }}
+           className={`relative overflow-hidden bg-zinc-950 text-zinc-200 font-mono select-none transition-all duration-300 shadow-2xl rounded-xl border border-white/10
+             ${isFiring ? 'cursor-crosshair' : 'cursor-default'}
+           `}
+           onMouseDown={(e) => {
             if (!isTauri) return;
             if (e.button !== 0) return;
 
@@ -599,7 +588,37 @@ export default function App() {
           }}
         >
 
-        {/* Entire window is draggable; interactive elements opt-out via `button/input/...` or `data-no-drag`. */}
+         {/* Entire window is draggable; interactive elements opt-out via `button/input/...` or `data-no-drag`. */}
+
+         {/* bento-grid 风格背景（偏黑白，带轻微冷暖色偏移） */}
+         <div className="absolute inset-0 z-0 pointer-events-none">
+           <div
+             className="absolute inset-0"
+             style={{
+               backgroundImage:
+                 'radial-gradient(900px circle at 18% 10%, rgba(255,255,255,0.10), transparent 42%), radial-gradient(800px circle at 82% 88%, rgba(255,255,255,0.06), transparent 46%), radial-gradient(520px circle at 18% 86%, rgba(59,130,246,0.10), transparent 58%), radial-gradient(520px circle at 86% 72%, rgba(245,158,11,0.08), transparent 58%), linear-gradient(180deg, rgba(255,255,255,0.04) 0%, rgba(0,0,0,0.18) 45%, rgba(0,0,0,0.55) 100%)',
+             }}
+           />
+           <div
+             className="absolute inset-0 opacity-[0.28]"
+             style={{
+               backgroundImage:
+                 'linear-gradient(to right, rgba(255,255,255,0.06) 1px, transparent 1px), linear-gradient(to bottom, rgba(255,255,255,0.06) 1px, transparent 1px)',
+               backgroundSize: '22px 22px',
+               maskImage:
+                 'radial-gradient(ellipse at center, rgba(0,0,0,1) 32%, rgba(0,0,0,0) 78%)',
+               WebkitMaskImage:
+                 'radial-gradient(ellipse at center, rgba(0,0,0,1) 32%, rgba(0,0,0,0) 78%)',
+             }}
+           />
+           <div
+             className="absolute inset-0"
+             style={{
+               backgroundImage:
+                 'radial-gradient(circle at 50% 50%, rgba(0,0,0,0) 0%, rgba(0,0,0,0.70) 74%)',
+             }}
+           />
+         </div>
 
         {/* 全屏 Overlay (报错/状态显示) */}
         <AnimatePresence>
@@ -761,41 +780,7 @@ export default function App() {
            </button>
          </div>
         
-        {/* 状态发光边框 */}
-        <div 
-          className={`absolute inset-0 pointer-events-none z-50 border-[6px] transition-all duration-300 rounded-xl
-            ${phase === 'SCAN' || phase === 'INIT' ? 'border-transparent' : ''}
-            ${phase === 'DASHBOARD' && !isCrosshairActive ? 'border-zinc-800/50' : ''}
-            ${phase === 'DASHBOARD' && isCrosshairActive && !isFiring ? 'border-amber-500/60 animate-pulse shadow-[inset_0_0_30px_rgba(245,158,11,0.2)]' : ''}
-            ${phase === 'DASHBOARD' && isCrosshairActive && isFiring ? 'border-emerald-500 shadow-[inset_0_0_60px_rgba(16,185,129,0.4)] scale-[0.995]' : ''}
-            ${(notifications.length > 0 && notifications[0].type === 'error') || fullScreenStatus === 'LOST' ? 'border-red-500/50 shadow-[inset_0_0_30px_rgba(220,38,38,0.2)]' : ''} 
-            ${fullScreenStatus === 'CONNECTING' ? 'border-amber-500/50 shadow-[inset_0_0_30px_rgba(245,158,11,0.2)]' : ''}
-            ${fullScreenStatus === 'OFFLINE' ? 'border-zinc-500/50' : ''}
-            ${(notifications.length > 0 && notifications[0].type === 'success') ? 'border-emerald-500/50 shadow-[inset_0_0_30px_rgba(16,185,129,0.2)]' : ''} 
-          `} 
-          style={{ animationDuration: '3s' }}
-        />
-
-        {/* 背景粒子效果 */}
-        <div className="absolute inset-0 z-0 opacity-20">
-           {particles.current.map(p => (
-             <motion.div
-               key={p.id}
-               className="absolute bg-zinc-500 rounded-full"
-               style={{ width: p.size, height: p.size, left: p.x, top: p.y }}
-               animate={{ 
-                 y: [p.y, p.y - 1000],
-                 opacity: [0, 0.5, 0]
-               }}
-               transition={{ 
-                 duration: (10 / p.speed) / sensitivity, 
-                 repeat: Infinity,
-                 repeatDelay: Math.random() * 2,
-                 ease: "linear"
-               }}
-             />
-           ))}
-        </div>
+        {/* bento-grid 风格：不使用“发光边框 / 粒子”，整体更克制 */}
 
         {/* 主内容区域 */}
         <div className="relative z-10 w-full h-full flex items-center justify-center p-4">
@@ -872,7 +857,6 @@ export default function App() {
                 exit={{ opacity: 0, scale: 0.9, filter: "blur(10px)", transition: { duration: 0.3 } }} // 新增退场动画
                 className="w-full h-full flex flex-col items-center"
               >
-                
                 {/* 顶部数字区域 */}
                 <div className="flex-1 w-full flex flex-col items-center justify-center">
                   <div className="group relative translate-y-3">
@@ -881,14 +865,14 @@ export default function App() {
                       initial={{ y: 15, opacity: 0.5, filter: 'blur(2px)' }} 
                       animate={{ y: 0, opacity: 1, filter: 'blur(0px)' }}
                       className={`relative text-7xl font-black tracking-tighter tabular-nums flex items-baseline 
-                          ${isSyncing ? 'text-amber-500 drop-shadow-[0_0_15px_rgba(245,158,11,0.5)]' : 'text-white'}
+                          ${isSyncing ? 'text-amber-200' : 'text-white'}
                       `}
                     >
                       {sensitivity.toFixed(2)}
                       
                       {/* 同步指示点：提示后端正在写入数据 */}
                       {isSyncing && (
-                        <div className="absolute -right-3 top-1 w-1.5 h-1.5 bg-amber-500 rounded-full animate-ping" />
+                        <div className="absolute -right-3 top-1 w-1.5 h-1.5 bg-amber-300 rounded-full animate-ping" />
                       )}
 
                       <button
@@ -896,7 +880,7 @@ export default function App() {
                         onClick={() => {
                           if (sensitivity !== 1.0) setSensitivity(1.0);
                         }}
-                        className="absolute left-full top-1/2 -translate-y-1/2 ml-3 opacity-0 group-hover:opacity-100 transition-opacity p-1.5 hover:bg-zinc-800 rounded text-zinc-500 hover:text-white"
+                        className="absolute left-full top-1/2 -translate-y-1/2 ml-3 opacity-0 group-hover:opacity-100 transition-opacity p-1.5 hover:bg-white/5 rounded text-zinc-500 hover:text-white"
                         title="重置为 1.00"
                       >
                         <RefreshCw size={12} />
@@ -928,17 +912,17 @@ export default function App() {
                       }}
                       className="absolute inset-0 z-20 w-full opacity-0 cursor-ew-resize"
                     />
-                    
-                    <div className="w-full h-1 bg-zinc-800 rounded-full overflow-hidden">
+                     
+                    <div className="w-full h-1 bg-white/10 rounded-full overflow-hidden">
                       <motion.div 
-                        className={`h-full transition-colors duration-500 ${isSyncing ? 'bg-amber-500' : 'bg-white'}`}
+                        className={`h-full transition-colors duration-500 ${isSyncing ? 'bg-amber-400' : 'bg-white/80'}`}
                         style={{ width: `${sliderPercent}%` }}
                       />
                     </div>
-
-                    <div className="absolute top-1/2 -translate-y-1/2 w-0.5 h-3 bg-zinc-600 left-1/2" />
+ 
+                    <div className="absolute top-1/2 -translate-y-1/2 w-0.5 h-3 bg-white/15 left-1/2" />
                     <motion.div 
-                      className={`absolute h-5 w-1 shadow-[0_0_10px_white] pointer-events-none transition-colors duration-500 ${isSyncing ? 'bg-amber-500' : 'bg-white'}`}
+                      className={`absolute h-5 w-1 shadow-[0_1px_3px_rgba(0,0,0,0.55)] pointer-events-none transition-colors duration-500 ${isSyncing ? 'bg-amber-300' : 'bg-white/90'}`}
                       style={{ left: `${sliderPercent}%` }}
                     />
 
@@ -949,11 +933,11 @@ export default function App() {
                               initial={{ opacity: 0, y: -5 }} 
                               animate={{ opacity: 1, y: 0 }} 
                               exit={{ opacity: 0, y: -5 }}
-                              className="text-[10px] font-mono text-amber-500 tracking-widest scale-90"
+                              className="text-[10px] font-mono text-amber-200 tracking-widest scale-90"
                             >
                               同步中...
                             </motion.span>
-                          )}
+                         )}
                         </AnimatePresence>
                     </div>
                   </div>
@@ -962,106 +946,68 @@ export default function App() {
                 {/* 底部按钮区域 */}
                 <div className="flex-1 w-full flex flex-col items-center justify-center">
                   <div className="flex items-center gap-16 text-zinc-600 -translate-y-2">
-                      
-                      {/* --- [后端注意] 左侧：鼠标开关按钮 --- */}
-                      {/* 功能：控制整个辅助功能的总开关。 */}
-                      {/* 灭 (OFF): 对应关闭自动按左键功能，恢复灵敏度。 */}
-                      {/* 亮 (ON): 恢复上次记忆的瞄准镜状态。 */}
-                      <div 
-                        data-no-drag
-                        className={`group relative flex flex-col items-center gap-2 transition-all duration-300 
-                          ${isProcessing ? 'cursor-wait' : 'cursor-pointer'}
-                          ${mouseStatus === 'OFF' ? 'opacity-50' : 'opacity-100'}
-                          ${isMouseActive ? 'scale-110' : ''}
-                        `}
-                        onMouseDown={(e) => e.nativeEvent.stopImmediatePropagation()} 
-                        onClick={handleMouseToggle}
-                      >
-                          <AnimatePresence>
-                            {isMouseActive && (
-                              <motion.div
-                                initial={{ opacity: 0, scale: 0.5, x: "-50%", y: "-50%" }}
-                                animate={{ opacity: 1, scale: 1, x: "-50%", y: "-50%" }}
-                                exit={{ opacity: 0, scale: 0.5, x: "-50%", y: "-50%" }}
-                                className="absolute left-1/2 top-1/2 w-24 h-24 pointer-events-none z-0"
-                                style={{ mixBlendMode: 'plus-lighter' }} 
-                              >
-                                <div className="w-full h-full bg-[radial-gradient(circle,rgba(255,255,255,0.8)_0%,rgba(59,130,246,0.6)_40%,rgba(59,130,246,0)_70%)] blur-xl" />
-                              </motion.div>
-                            )}
-                          </AnimatePresence>
-
-                        <div className={`relative z-10 p-4 rounded-full border backdrop-blur-md transition-all duration-500
-                          ${isMouseActive 
-                            ? 'bg-white/10 border-white/80' 
-                            : mouseStatus === 'SHUTTING_DOWN' ? 'bg-red-500/10 border-red-500/50' : 'bg-white/5 border-white/10 hover:bg-white/10'}
-                        `}>
-                          <Mouse size={24} className={`transition-all duration-300 
-                            ${isMouseActive ? 'text-white drop-shadow-[0_0_2px_rgba(255,255,255,1)]' : 'text-white/20'}
-                            ${mouseStatus === 'BOOTING' ? 'animate-pulse text-blue-400' : ''}
-                            ${mouseStatus === 'SHUTTING_DOWN' ? 'text-red-400 opacity-50' : ''}
-                          `} />
-                        </div>
+                    {/* --- [后端注意] 左侧：鼠标开关按钮 --- */}
+                    {/* 功能：控制整个辅助功能的总开关。 */}
+                    {/* 灭 (OFF): 对应关闭自动按左键功能，恢复灵敏度。 */}
+                    {/* 亮 (ON): 恢复上次记忆的瞄准镜状态。 */}
+                    <div 
+                      data-no-drag
+                      className={`group relative flex flex-col items-center gap-2 transition-all duration-300 
+                        ${isProcessing ? 'cursor-wait' : 'cursor-pointer'}
+                        ${mouseStatus === 'OFF' ? 'opacity-50' : 'opacity-100'}
+                        ${isMouseActive ? 'scale-110' : ''}
+                      `}
+                      onMouseDown={(e) => e.nativeEvent.stopImmediatePropagation()} 
+                      onClick={handleMouseToggle}
+                    >
+                      <div className={`relative z-10 p-4 rounded-full border backdrop-blur-md transition-all duration-500
+                        ${isMouseActive 
+                          ? 'bg-white/10 border-white/35' 
+                          : mouseStatus === 'SHUTTING_DOWN' ? 'bg-red-500/10 border-red-500/30' : 'bg-white/5 border-white/10 hover:bg-white/10'}
+                      `}>
+                        <Mouse size={24} className={`transition-all duration-300 
+                          ${isMouseActive ? 'text-white' : 'text-white/35'}
+                          ${mouseStatus === 'BOOTING' ? 'animate-pulse text-blue-200' : ''}
+                          ${mouseStatus === 'SHUTTING_DOWN' ? 'text-red-200 opacity-60' : ''}
+                        `} />
                       </div>
+                    </div>
 
-                      {/* --- [后端注意] 右侧：瞄准/开火按钮 --- */}
-                      {/* 对应 CLI：'p' 键（自动按左键功能）。 */}
-                      {/* 状态说明： */}
-                      {/* 琥珀色: 功能开启，待机状态。 */}
-                      {/* 绿色 (isFiring): 触发自动按左键。 */}
-                      <div 
-                        data-no-drag
-                        className={`group relative flex flex-col items-center gap-2 transition-all duration-300 
-                          ${isCrosshairActive ? 'scale-110' : 'opacity-50'}
-                          ${isMouseActive ? 'cursor-pointer' : 'cursor-not-allowed opacity-20'} 
-                        `}
-                        onMouseDown={(e) => e.nativeEvent.stopImmediatePropagation()}
-                        onClick={() => {
-                           if (!isMouseActive) return;
-                           const next = !isCrosshairActive;
-                           crosshairMemory.current = next;
-                           tauriInvoke('ui_save_state', { state: { crosshairMemory: next } }).catch(() => {});
-                           isCrosshairActiveRef.current = next;
-                           setIsCrosshairActive(next);
-                           setIsFiring(false);
-                           tauriInvoke('backend_set_feature', { enabled: next }).catch(() => {});
-                        }}
-                      >
-                          <AnimatePresence>
-                            {(isFiring || isCrosshairActive) && (
-                              <motion.div
-                                initial={{ opacity: 0, scale: 0.5, x: "-50%", y: "-50%" }}
-                                animate={{ opacity: 1, scale: 1, x: "-50%", y: "-50%" }}
-                                exit={{ opacity: 0, scale: 0.5, x: "-50%", y: "-50%" }}
-                                className="absolute left-1/2 top-1/2 w-24 h-24 pointer-events-none z-0"
-                                style={{ mixBlendMode: 'plus-lighter' }}
-                              >
-                                <div
-                                  className={`w-full h-full blur-xl transition-all duration-500 ${
-                                    isFiring
-                                      ? 'bg-[radial-gradient(circle,rgba(255,255,255,0.85)_0%,rgba(16,185,129,0.7)_38%,rgba(16,185,129,0)_72%)]'
-                                      : 'bg-[radial-gradient(circle,rgba(255,255,255,0.85)_0%,rgba(245,158,11,0.7)_38%,rgba(245,158,11,0)_72%)]'
-                                  }`}
-                                />
-                              </motion.div>
-                            )}
-                          </AnimatePresence>
-                          
-                          {/* 按钮主体背景：玻璃拟态 */}
-                          <div className={`relative z-10 p-4 rounded-full border backdrop-blur-md transition-all duration-500
-                            ${(isFiring || isCrosshairActive) 
-                              ? 'bg-white/10 border-white/80' 
-                              : 'bg-white/5 border-white/10 hover:bg-white/10'}
-                          `}>
-                            <Crosshair size={24} className={`transition-colors duration-300 
-                                ${(isFiring || isCrosshairActive) ? 'text-white drop-shadow-[0_0_2px_rgba(255,255,255,1)]' : 'text-white/20'}
-                              `} 
-                            />
-                          </div>
+                    {/* --- [后端注意] 右侧：瞄准/开火按钮 --- */}
+                    {/* 对应 CLI：'p' 键（自动按左键功能）。 */}
+                    {/* 状态说明： */}
+                    {/* 琥珀色: 功能开启，待机状态。 */}
+                    <div 
+                      data-no-drag
+                      className={`group relative flex flex-col items-center gap-2 transition-all duration-300 
+                        ${isCrosshairActive ? 'scale-110' : 'opacity-50'}
+                        ${isMouseActive ? 'cursor-pointer' : 'cursor-not-allowed opacity-20'} 
+                      `}
+                      onMouseDown={(e) => e.nativeEvent.stopImmediatePropagation()}
+                      onClick={() => {
+                         if (!isMouseActive) return;
+                         const next = !isCrosshairActive;
+                         crosshairMemory.current = next;
+                         tauriInvoke('ui_save_state', { state: { crosshairMemory: next } }).catch(() => {});
+                         isCrosshairActiveRef.current = next;
+                         setIsCrosshairActive(next);
+                         setIsFiring(false);
+                         tauriInvoke('backend_set_feature', { enabled: next }).catch(() => {});
+                      }}
+                    >
+                      <div className={`relative z-10 p-4 rounded-full border backdrop-blur-md transition-all duration-500
+                        ${(isFiring || isCrosshairActive) 
+                          ? 'bg-white/10 border-white/40' 
+                          : 'bg-white/5 border-white/10 hover:bg-white/10'}
+                      `}>
+                        <Crosshair size={24} className={`transition-colors duration-300 
+                            ${(isFiring || isCrosshairActive) ? 'text-white' : 'text-white/35'}
+                          `} 
+                        />
                       </div>
+                    </div>
                   </div>
                 </div>
-
               </motion.div>
             )}
 
