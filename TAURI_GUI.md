@@ -17,7 +17,7 @@ This repo now contains a **Tauri + Vite + React** GUI:
 `mouse_monitor` reads/writes `settings.json` and calls `writer.exe` to apply changes.
 
 1. Copy `settings.example.json` to `settings.json` in the same folder as `mouse_monitor.exe`
-2. Make sure RawAccel is installed/running so `writer.exe` can apply settings
+2. Make sure the RawAccel driver is installed (and rebooted if needed) so `writer.exe` can apply settings
 
 ## Build `mouse_monitor.exe`
 
@@ -51,7 +51,7 @@ npm run tauri:build
 
 After the build, the script copies `mouse_monitor.exe`, `writer.exe`, `wrapper.dll` (and creates `settings.json` if missing) into:
 
-- `src-tauri/target/release/`
+- `src-tauri/target/release/backend/`
 
 It also produces a clean portable folder:
 
@@ -69,15 +69,21 @@ npm run tauri:bundle
 
 ## Portable distribution note
 
-This setup is **portable**: at runtime the GUI looks for `mouse_monitor.exe` next to the Tauri app executable, and `mouse_monitor.exe` looks for `settings.json` next to itself.
+This setup is **portable**: at runtime the GUI looks for `mouse_monitor.exe` in `backend/` next to the Tauri app executable (or directly next to it as a fallback), and `mouse_monitor.exe` looks for `settings.json` next to itself.
 
-So when you run the built app from a folder, keep these together in the same directory:
+So when you run the built app from a folder, keep these together:
 
 - `RawAccel Monitor.exe` (the Tauri app)
-- `mouse_monitor.exe`
-- `writer.exe`
-- `wrapper.dll`
-- `settings.json`
+- `backend/mouse_monitor.exe`
+- `backend/writer.exe`
+- `backend/wrapper.dll`
+- `backend/settings.json`
+
+Optional (for installing/uninstalling the RawAccel driver on a new PC):
+
+- `01_Install_RawAccel_Driver.exe`
+- `02_Uninstall_RawAccel_Driver.exe`
+- `rawaccel.sys`
 
 ## IPC protocol (debug)
 
