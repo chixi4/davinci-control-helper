@@ -865,14 +865,14 @@ export default function App() {
                       initial={{ y: 15, opacity: 0.5, filter: 'blur(2px)' }} 
                       animate={{ y: 0, opacity: 1, filter: 'blur(0px)' }}
                       className={`relative text-7xl font-black tracking-tighter tabular-nums flex items-baseline 
-                          ${isSyncing ? 'text-amber-200' : 'text-white'}
+                          ${isSyncing ? 'text-amber-500' : 'text-white'}
                       `}
                     >
                       {sensitivity.toFixed(2)}
                       
                       {/* 同步指示点：提示后端正在写入数据 */}
                       {isSyncing && (
-                        <div className="absolute -right-3 top-1 w-1.5 h-1.5 bg-amber-300 rounded-full animate-ping" />
+                        <div className="absolute -right-3 top-1 w-1.5 h-1.5 bg-amber-500 rounded-full animate-ping" />
                       )}
 
                       <button
@@ -915,14 +915,14 @@ export default function App() {
                      
                     <div className="w-full h-1 bg-white/10 rounded-full overflow-hidden">
                       <motion.div 
-                        className={`h-full transition-colors duration-500 ${isSyncing ? 'bg-amber-400' : 'bg-white/80'}`}
+                        className={`h-full transition-colors duration-500 ${isSyncing ? 'bg-amber-500' : 'bg-white/80'}`}
                         style={{ width: `${sliderPercent}%` }}
                       />
                     </div>
  
                     <div className="absolute top-1/2 -translate-y-1/2 w-0.5 h-3 bg-white/15 left-1/2" />
                     <motion.div 
-                      className={`absolute h-5 w-1 shadow-[0_1px_3px_rgba(0,0,0,0.55)] pointer-events-none transition-colors duration-500 ${isSyncing ? 'bg-amber-300' : 'bg-white/90'}`}
+                      className={`absolute h-5 w-1 shadow-[0_1px_3px_rgba(0,0,0,0.55)] pointer-events-none transition-colors duration-500 ${isSyncing ? 'bg-amber-500' : 'bg-white/90'}`}
                       style={{ left: `${sliderPercent}%` }}
                     />
 
@@ -933,7 +933,7 @@ export default function App() {
                               initial={{ opacity: 0, y: -5 }} 
                               animate={{ opacity: 1, y: 0 }} 
                               exit={{ opacity: 0, y: -5 }}
-                              className="text-[10px] font-mono text-amber-200 tracking-widest scale-90"
+                              className="text-[10px] font-mono text-amber-500 tracking-widest scale-90"
                             >
                               同步中...
                             </motion.span>
@@ -966,9 +966,9 @@ export default function App() {
                           : mouseStatus === 'SHUTTING_DOWN' ? 'bg-red-500/10 border-red-500/30' : 'bg-white/5 border-white/10 hover:bg-white/10'}
                       `}>
                         <Mouse size={24} className={`transition-all duration-300 
-                          ${isMouseActive ? 'text-white' : 'text-white/35'}
-                          ${mouseStatus === 'BOOTING' ? 'animate-pulse text-blue-200' : ''}
-                          ${mouseStatus === 'SHUTTING_DOWN' ? 'text-red-200 opacity-60' : ''}
+                          ${isMouseActive ? 'text-blue-400' : 'text-white/20'}
+                          ${mouseStatus === 'BOOTING' ? 'animate-pulse text-blue-300' : ''}
+                          ${mouseStatus === 'SHUTTING_DOWN' ? 'text-red-400 opacity-50' : ''}
                         `} />
                       </div>
                     </div>
@@ -1001,7 +1001,7 @@ export default function App() {
                           : 'bg-white/5 border-white/10 hover:bg-white/10'}
                       `}>
                         <Crosshair size={24} className={`transition-colors duration-300 
-                            ${(isFiring || isCrosshairActive) ? 'text-white' : 'text-white/35'}
+                            ${isFiring ? 'text-emerald-400' : isCrosshairActive ? 'text-amber-400' : 'text-white/20'}
                           `} 
                         />
                       </div>
