@@ -51,6 +51,8 @@ std::atomic<DWORD> g_lastRegisteredMoveTime(0);  // 注册鼠标最后移动时�
 std::atomic<DWORD> g_cooldownUntil(0);           // 冷却期结束时间
 std::atomic<LockState> g_lockState(LockState::IDLE);
 std::atomic<bool> g_otherMouseActive(false);     // 其他鼠标是否活跃
+std::atomic<bool> g_restoreRequired(false);      // 退出时是否需要恢复灵敏度（writer.exe）
+std::atomic<bool> g_cleanupRan(false);           // 防止退出清理重复执行
 
 LONG g_moveCount = 0;
 short g_lastRawX = 0;
@@ -101,6 +103,7 @@ const char* SETTINGS_FILE = "settings.json";
 const char* SENS_PROFILE_NAME = "sens_registered_mouse";
 
 // ========== 函数声明 ==========
+static bool IsDefaultSensitivityMultiplier(double multiplier);
 void MouseLeftDown();
 void MouseLeftUp();
 void QueueEvent(const std::string& line);
@@ -139,7 +142,9 @@ void ReleaseToIdle();
 LRESULT CALLBACK LowLevelMouseProc(int nCode, WPARAM wParam, LPARAM lParam);
 bool InstallMouseHook();
 void UninstallMouseHook();
-void FailsafeCleanup();
+bool HasSensProfileDeviceMappings(const std::string& content);
+bool IsRestoreNeededOnExit();
+void FailsafeCleanup(bool restoreSettings);
 void PerformFullReset();
 bool RemoveOldSensDeviceMappings(std::string& content, const std::string& currentHardwareId);
 
@@ -242,6 +247,12 @@ void ProcessIpcCommands() {
     }
 }
 
+static bool IsDefaultSensitivityMultiplier(double multiplier) {
+    // Treat values extremely close to 1.0 as default (avoid float noise).
+    const double kEpsilon = 1e-4;
+    return std::abs(multiplier - 1.0) < kEpsilon;
+}
+
 bool ApplySensitivityMultiplier(double multiplier, std::string& errorMsg) {
     if (g_registeredDevice.load() == NULL) {
         errorMsg = "no mouse registered";
@@ -268,6 +279,7 @@ bool ApplySensitivityMultiplier(double multiplier, std::string& errorMsg) {
     }
 
     g_currentSensitivity = multiplier;
+    g_restoreRequired.store(!IsDefaultSensitivityMultiplier(multiplier));
     return true;
 }
 
@@ -300,6 +312,7 @@ bool RestoreDefaultSensitivity(std::string& errorMsg) {
         return false;
     }
 
+    g_restoreRequired.store(false);
     return true;
 }
 
@@ -318,9 +331,12 @@ void HandleIpcCommand(const std::string& line) {
     }
 
     if (cmd == "QUIT") {
-        QueueEvent("EVT EXITING");
-        FlushEvents();
-        FailsafeCleanup();
+        const bool restoreSettings = IsRestoreNeededOnExit();
+        if (restoreSettings) {
+            QueueEvent("EVT EXITING");
+            FlushEvents();
+        }
+        FailsafeCleanup(restoreSettings);
         QueueEvent("EVT EXITED");
         FlushEvents();
         g_running.store(false);
@@ -491,9 +507,11 @@ void ReleaseToIdle() {
 }
 
 // 安全清理：确保程序退出时不会留下按住的左键
-void FailsafeCleanup() {
-    static std::atomic<bool> s_cleanupRan{false};
-    if (s_cleanupRan.exchange(true)) {
+// restoreSettings:
+// - true: 尝试清理 devices 映射并运行 writer.exe，确保退出后灵敏度恢复正常
+// - false: 只做输入/钩子/状态清理（用于“无需恢复灵敏度”的快速退出）
+void FailsafeCleanup(bool restoreSettings) {
+    if (g_cleanupRan.exchange(true)) {
         return;
     }
 
@@ -511,6 +529,10 @@ void FailsafeCleanup() {
     g_lockState.store(LockState::IDLE);
     UninstallMouseHook();
 
+    if (!restoreSettings) {
+        return;
+    }
+
     // 退出时恢复鼠标灵敏度：清理 settings.json 中的设备映射
     std::lock_guard<std::mutex> lock(g_settingsMutex);
     std::string content;
@@ -520,7 +542,9 @@ void FailsafeCleanup() {
                 if (!g_ipcMode.load()) {
                     printf("\n[EXIT] Restored mouse sensitivity (cleared device mappings)\n");
                 }
-                RunWriterExe();  // 应用配置
+                if (RunWriterExe()) {  // 应用配置
+                    g_restoreRequired.store(false);
+                }
             }
         }
     }
@@ -602,10 +626,10 @@ void PerformFullReset() {
                         printf("[RESET] Cleared device mappings for profile: %s\n", SENS_PROFILE_NAME);
                         printf("[RESET] Running writer.exe to apply configuration...\n");
                     }
-                    if (!RunWriterExe()) {
-                        if (!ipc) {
-                            printf("[RESET] [WARN] writer.exe may have failed. Check if RawAccel is running.\n");
-                        }
+                    if (RunWriterExe()) {
+                        g_restoreRequired.store(false);
+                    } else if (!ipc) {
+                        printf("[RESET] [WARN] writer.exe may have failed. Check if RawAccel is running.\n");
                     }
                 }
             } else {
@@ -1306,6 +1330,47 @@ bool RemoveOldSensDeviceMappings(std::string& content, const std::string& curren
     return true;
 }
 
+bool HasSensProfileDeviceMappings(const std::string& content) {
+    size_t arrStart = 0, arrEnd = 0;
+    if (!FindJsonArrayRange(content, "devices", arrStart, arrEnd)) {
+        return false;
+    }
+
+    size_t search = arrStart;
+    while (true) {
+        size_t objStart = 0, objEnd = 0;
+        if (!FindNextJsonObject(content, search, arrEnd, objStart, objEnd)) break;
+
+        std::string obj = content.substr(objStart, objEnd - objStart + 1);
+        std::string profile;
+        if (ExtractJsonStringField(obj, "profile", profile) && profile == SENS_PROFILE_NAME) {
+            return true;
+        }
+
+        search = objEnd + 1;
+    }
+
+    return false;
+}
+
+bool IsRestoreNeededOnExit() {
+    if (g_restoreRequired.load()) return true;
+
+    // In IPC (GUI) mode, only show the "exiting" spinner / blocking cleanup when we
+    // have actually applied a non-default sensitivity multiplier.
+    if (g_ipcMode.load()) return false;
+
+    if (g_settingsPath.empty()) return false;
+
+    std::string content;
+    if (!ReadFileContent(g_settingsPath.c_str(), content)) {
+        // Conservative: if we can't inspect settings, keep the safe behavior (try restore).
+        return true;
+    }
+
+    return HasSensProfileDeviceMappings(content);
+}
+
 // 在devices数组中添加或更新设备映射
 bool AddOrUpdateDeviceMapping(std::string& content, const std::string& hardwareId, std::string& errorMsg) {
     // 先清理旧映射，避免多个设备共享同一 sens_registered_mouse profile 导致"调一个全都变"
@@ -1937,6 +2002,15 @@ int main(int argc, char** argv) {
         }
     }
 
+    // IPC (GUI) mode: if we detect a leftover mapping with a non-default multiplier
+    // (e.g. previous crash), ensure exit performs restoration and UI shows spinner.
+    if (g_ipcMode.load() && !IsDefaultSensitivityMultiplier(g_currentSensitivity)) {
+        std::string content;
+        if (ReadFileContent(g_settingsPath.c_str(), content) && HasSensProfileDeviceMappings(content)) {
+            g_restoreRequired.store(true);
+        }
+    }
+
     const bool restored = TryRestoreLastRegisteredMouse();
 
     // CLI mode has no separate "power" toggle; keep it enabled for existing behavior.
@@ -2031,7 +2105,7 @@ int main(int argc, char** argv) {
 
             // 退出键
             if (ch == 'q' || ch == 'Q') {
-                FailsafeCleanup();
+                FailsafeCleanup(IsRestoreNeededOnExit());
                 g_running.store(false);
                 break;
             }
@@ -2108,19 +2182,16 @@ int main(int argc, char** argv) {
 
         // 双击 Caps Lock 检测（500ms 时间窗）
         // GetAsyncKeyState 低位：自上次调用后是否按下过该键（边沿事件）
-        // IPC 模式下禁用，避免与前端触发的 RESET 命令双触发
-        if (!g_ipcMode.load()) {
-            static DWORD s_lastCapsPressTick = 0;
-            if (GetAsyncKeyState(VK_CAPITAL) & 0x0001) {
-                DWORD now = GetTickCount();
-                const DWORD kCapsDoublePressWindowMs = 500;
-                if (s_lastCapsPressTick != 0 && (DWORD)(now - s_lastCapsPressTick) <= kCapsDoublePressWindowMs) {
-                    s_lastCapsPressTick = 0;
-                    PerformFullReset();
-                    continue;
-                }
-                s_lastCapsPressTick = now;
+        static DWORD s_lastCapsPressTick = 0;
+        if (GetAsyncKeyState(VK_CAPITAL) & 0x0001) {
+            DWORD now = GetTickCount();
+            const DWORD kCapsDoublePressWindowMs = 500;
+            if (s_lastCapsPressTick != 0 && (DWORD)(now - s_lastCapsPressTick) <= kCapsDoublePressWindowMs) {
+                s_lastCapsPressTick = 0;
+                PerformFullReset();
+                continue;
             }
+            s_lastCapsPressTick = now;
         }
 
         // 注册模式下只处理按键，跳过其他逻辑
@@ -2147,7 +2218,7 @@ int main(int argc, char** argv) {
     }
 
     // 确保清理
-    FailsafeCleanup();
+    FailsafeCleanup(IsRestoreNeededOnExit());
     FlushEvents();
 
     // 停止消息循环

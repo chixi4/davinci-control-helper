@@ -28,6 +28,12 @@ async function tauriClose() {
   return appWindow.close();
 }
 
+async function tauriShowAndFocus() {
+  if (!isTauri) return;
+  const { appWindow } = await import('@tauri-apps/api/window');
+  await Promise.allSettled([appWindow.show(), appWindow.unminimize(), appWindow.setFocus()]);
+}
+
 async function tauriStartDragging() {
   if (!isTauri) return;
   const { appWindow } = await import('@tauri-apps/api/window');
@@ -155,6 +161,7 @@ export default function App() {
   const skipNextSensitivitySend = useRef(false);
   const pendingPower = useRef(null);
   const pendingExit = useRef(null);
+  const closeRequested = useRef(false);
   const isCrosshairActiveRef = useRef(false);
   const mouseStatusRef = useRef('OFF');
   const phaseRef = useRef(phase);
@@ -305,6 +312,7 @@ export default function App() {
             pendingSensitivity.current = null;
             pendingPower.current = null;
             setIsSyncing(false);
+            tauriShowAndFocus().catch(() => {});
             return;
           }
 
@@ -478,7 +486,8 @@ export default function App() {
       // 交互逻辑：双击后立即触发界面切换动画（Dashboard退场 -> Scan进场）。
       // 意图：利用转场动画本身的时间（约0.5-0.8秒）来掩盖后端重置所需的1秒耗时。
       // 后端请在收到此信号后，在后台异步执行重置操作。
-      if (e.key === 'CapsLock') {
+      // Tauri 模式下改为后端全局监听（即使窗口在后台也生效）
+      if (!isTauri && e.key === 'CapsLock') {
         const now = Date.now();
         if (now - lastCapsLockTime.current < 300) {
           if (phase === 'DASHBOARD') {
@@ -705,14 +714,14 @@ export default function App() {
             <Minus size={14} className="text-zinc-600 group-hover:text-zinc-200 transition-colors" />
           </button>
           
-          <button 
-              className={`group p-1.5 rounded transition-colors flex items-center justify-center
-                ${isClosing ? 'bg-red-500/20 text-red-500' : 'hover:bg-red-500/10'}
-              `}
-              onClick={() => {
-                if (isClosing) return;
-                setIsClosing(true);
-
+           <button 
+               className={`group p-1.5 rounded transition-colors flex items-center justify-center
+                 ${isClosing ? 'bg-red-500/20 text-red-500' : 'hover:bg-red-500/10'}
+               `}
+               onClick={() => {
+                if (isClosing || closeRequested.current) return;
+                closeRequested.current = true;
+ 
                 if (!isTauri) {
                   window.close?.();
                   return;
@@ -732,23 +741,25 @@ export default function App() {
                   if (finished) return;
                   finished = true;
                   window.clearTimeout(timeoutId);
-                  tauriClose().catch(() => {});
+                 tauriClose().catch(() => {});
                 };
-
+ 
                 tauriInvoke('backend_quit').catch(() => {
                   const done = pendingExit.current;
                   pendingExit.current = null;
                   if (typeof done === 'function') done();
                 });
-              }}
-          >
-            {isClosing ? (
-              <Loader2 size={14} className="animate-spin" />
-            ) : (
-              <X size={14} className="text-zinc-600 group-hover:text-red-500 transition-colors" />
-            )}
-          </button>
-        </div>
+               }}
+           >
+             {isClosing ? (
+             <span className="flex items-center justify-center w-[14px] h-[14px]">
+                <Loader2 className="animate-spin w-full h-full block" />
+              </span>
+             ) : (
+               <X size={14} className="text-zinc-600 group-hover:text-red-500 transition-colors" />
+             )}
+           </button>
+         </div>
         
         {/* 状态发光边框 */}
         <div 
