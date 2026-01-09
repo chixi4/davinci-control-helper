@@ -450,9 +450,13 @@ void MoveCursorBy(LONG dx, LONG dy) {
 
 // 获取冷却期时长（使用系统双击时间）
 DWORD GetCooldownDuration() {
-    DWORD cooldown = GetDoubleClickTime();
-    if (cooldown == 0) cooldown = 500;
-    return cooldown;
+    // NOTE:
+    // The original implementation used GetDoubleClickTime() (often ~500ms),
+    // which can make "move -> auto left-down" feel delayed (you travel a long
+    // distance before the click engages when moving fast).
+    //
+    // Keep this short so the feature re-arms quickly after a release.
+    return 0;
 }
 
 // 进入 LOCKED 状态：按下左键，开始阻止其他鼠标
@@ -1767,6 +1771,12 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                                     if (currentState == LockState::IDLE) {
                                         // 检查冷却期
                                         if (now >= cooldownUntil) {
+                                            // Drag-start accuracy: the first movement tick may have already moved the
+                                            // cursor via legacy input (because we only start blocking after entering
+                                            // LOCKED). Rewind this tick so the left-down happens at the original spot.
+                                            if (!g_blockingMouse.load()) {
+                                                MoveCursorBy(-accelX, -accelY);
+                                            }
                                             EnterLockedState();
                                         }
                                     } else if (currentState == LockState::LOCKED || currentState == LockState::UNLOCKABLE) {
