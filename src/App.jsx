@@ -48,11 +48,11 @@ const WINDOW_HEIGHT = 460;
 // 后端人员请注意：这里需要替换为实际的硬件/驱动报错信息接口。
 // 格式建议保持 "类型:内容" 以便前端解析颜色。
 const DEBUG_SEQUENCE = [
-  "ERR:DRIVER NOT FOUND",        
-  "OK:CONFIG SAVED",            
-  "ERR:WRITE TIMEOUT",          
-  "OK:FIRMWARE UPDATED",        
-  "ERR:INVALID PARAMETER",       
+  "ERR:未检测到驱动",        
+  "OK:配置已保存",            
+  "ERR:写入超时",          
+  "OK:固件已更新",        
+  "ERR:参数无效",       
   "FS:LOST",          
   "FS:CONNECTING",    
   "FS:OFFLINE"        
@@ -62,8 +62,8 @@ const DEBUG_SEQUENCE = [
 // 对应后端连接丢失、正在连接、服务下线等重大状态的视觉反馈
 const FULLSCREEN_CONFIG = {
   'LOST': {
-    title: "CONNECTION LOST",
-    subtitle: "ATTEMPTING TO RECONNECT...",
+    title: "连接已断开",
+    subtitle: "正在尝试重连...",
     colorClass: "text-red-500",
     bgClass: "bg-red-500",
     borderClass: "border-red-500",
@@ -71,8 +71,8 @@ const FULLSCREEN_CONFIG = {
     pulse: true
   },
   'CONNECTING': {
-    title: "ESTABLISHING UPLINK",
-    subtitle: "HANDSHAKE IN PROGRESS...",
+    title: "正在建立连接",
+    subtitle: "握手进行中...",
     colorClass: "text-amber-500",
     bgClass: "bg-amber-500",
     borderClass: "border-amber-500",
@@ -80,8 +80,8 @@ const FULLSCREEN_CONFIG = {
     pulse: true
   },
   'OFFLINE': {
-    title: "BACKEND OFFLINE",
-    subtitle: "SERVICE UNREACHABLE",
+    title: "后端离线",
+    subtitle: "服务不可用",
     colorClass: "text-zinc-300",
     bgClass: "bg-zinc-300",
     borderClass: "border-zinc-300",
@@ -236,7 +236,7 @@ export default function App() {
 
           if (kind === 'REGISTERED') {
             setFullScreenStatus(null);
-            addNotification('success', 'MOUSE REGISTERED');
+            addNotification('success', '鼠标已绑定');
             setShakeProgress(100);
             setPhase('DASHBOARD');
             return;
@@ -623,7 +623,7 @@ export default function App() {
               >
                  <div className="flex flex-col items-center gap-4">
                     <h2 
-                        className="text-2xl font-black tracking-[0.2em] drop-shadow-lg text-center px-4"
+                        className="text-2xl font-black tracking-[0.12em] drop-shadow-lg text-center px-4"
                         style={{ textShadow: `0 0 15px ${FULLSCREEN_CONFIG[fullScreenStatus].shadowColor}` }}
                     >
                         {FULLSCREEN_CONFIG[fullScreenStatus].title}
@@ -778,8 +778,6 @@ export default function App() {
 
         {/* 背景粒子效果 */}
         <div className="absolute inset-0 z-0 opacity-20">
-           <div className="absolute inset-0" 
-                style={{ backgroundImage: 'linear-gradient(#333 1px, transparent 1px), linear-gradient(90deg, #333 1px, transparent 1px)', backgroundSize: '30px 30px' }} />
            {particles.current.map(p => (
              <motion.div
                key={p.id}
@@ -814,8 +812,8 @@ export default function App() {
                 className="relative flex flex-col items-center"
               >
                 <Loader2 size={44} className="text-zinc-500 animate-spin" />
-                <div className="mt-8 text-zinc-600 text-xs tracking-[0.2em] font-bold">
-                  INITIALIZING...
+                <div className="mt-8 text-zinc-600 text-xs tracking-[0.12em] font-bold">
+                  正在初始化...
                 </div>
               </motion.div>
             )}
@@ -858,9 +856,9 @@ export default function App() {
                 <motion.div 
                   initial={{ opacity: 0 }} 
                   animate={{ opacity: 1 }}
-                  className="mt-8 text-zinc-600 text-xs tracking-[0.2em] font-bold"
+                  className="mt-8 text-zinc-600 text-xs tracking-[0.12em] font-bold"
                 >
-                  {isTauri ? (scanInputReady ? 'SHAKE YOUR MOUSE' : 'INITIALIZING...') : 'INITIALIZING...'}
+                  {isTauri ? (scanInputReady ? '请摇动鼠标' : '正在初始化...') : '正在初始化...'}
                 </motion.div>
               </motion.div>
             )}
@@ -899,7 +897,7 @@ export default function App() {
                           if (sensitivity !== 1.0) setSensitivity(1.0);
                         }}
                         className="absolute left-full top-1/2 -translate-y-1/2 ml-3 opacity-0 group-hover:opacity-100 transition-opacity p-1.5 hover:bg-zinc-800 rounded text-zinc-500 hover:text-white"
-                        title="Reset to 1.00"
+                        title="重置为 1.00"
                       >
                         <RefreshCw size={12} />
                       </button>
@@ -953,7 +951,7 @@ export default function App() {
                               exit={{ opacity: 0, y: -5 }}
                               className="text-[10px] font-mono text-amber-500 tracking-widest scale-90"
                             >
-                              SYNCING...
+                              同步中...
                             </motion.span>
                           )}
                         </AnimatePresence>
