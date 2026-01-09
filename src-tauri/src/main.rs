@@ -51,9 +51,14 @@ fn resolve_monitor_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
   // 1) Next to the Tauri executable (portable distribution).
   if let Ok(exe) = std::env::current_exe() {
     if let Some(dir) = exe.parent() {
-      let candidate = dir.join("mouse_monitor.exe");
-      if candidate.exists() {
-        return Ok(candidate);
+      let candidates = [
+        dir.join("backend").join("mouse_monitor.exe"),
+        dir.join("mouse_monitor.exe"),
+      ];
+      for candidate in candidates {
+        if candidate.exists() {
+          return Ok(candidate);
+        }
       }
     }
   }
@@ -77,7 +82,9 @@ fn resolve_monitor_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     }
   }
 
-  Err("could not find `mouse_monitor.exe` (build it and place it next to the app)".to_string())
+  Err(
+    "could not find `mouse_monitor.exe` (build it and place it next to the app, or next to the app in `backend/`)".to_string(),
+  )
 }
 
 fn resolve_ui_state_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
