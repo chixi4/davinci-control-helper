@@ -55,7 +55,10 @@ const GLASS_TOP_SEG3 = 0.30;
 const GLASS_BOTTOM_SEG3 = 0.90;
 const GLASS_TOP_SEG4 = 0.50;
 const GLASS_BOTTOM_SEG4 = 1.00;
-const GLASS_VIGNETTE_ALPHA = 0.25;
+const GLASS_VIGNETTE_SEG1 = 0.19;
+const GLASS_VIGNETTE_SEG2 = 0.25;
+const GLASS_VIGNETTE_SEG3 = 0.33;
+const GLASS_VIGNETTE_SEG4 = 0.44;
 
 // --- [后端注意] 报错与状态模拟数据 ---
 // 这是一个轮播的演示列表，用于展示灵敏度为1.0时的界面状态反馈。
@@ -182,6 +185,7 @@ export default function App() {
   const ambientTarget = useRef(1.0);
   const ambientTop = useRef(GLASS_TOP_SEG4);
   const ambientBottom = useRef(GLASS_BOTTOM_SEG4);
+  const ambientVignette = useRef(GLASS_VIGNETTE_SEG4);
   const ambientRaf = useRef(0);
   
   // 记忆功能：用于在重新开启鼠标开关时，恢复上次的瞄准镜状态
@@ -205,12 +209,13 @@ export default function App() {
   const getAmbientTargets = (value) => {
     const v = Math.max(AMBIENT_SEG1_START, Math.min(AMBIENT_SEG3_END, value));
     const lerp = (start, end, t) => start + (end - start) * t;
-    const blend = (fromTop, fromBottom, toTop, toBottom, start, end) => {
-      if (end <= start) return { top: toTop, bottom: toBottom };
+    const blend = (fromTop, fromBottom, fromVignette, toTop, toBottom, toVignette, start, end) => {
+      if (end <= start) return { top: toTop, bottom: toBottom, vignette: toVignette };
       const t = Math.max(0, Math.min(1, (v - start) / (end - start)));
       return {
         top: lerp(fromTop, toTop, t),
         bottom: lerp(fromBottom, toBottom, t),
+        vignette: lerp(fromVignette, toVignette, t),
       };
     };
 
@@ -218,8 +223,10 @@ export default function App() {
       return blend(
         GLASS_TOP_SEG1,
         GLASS_BOTTOM_SEG1,
+        GLASS_VIGNETTE_SEG1,
         GLASS_TOP_SEG2,
         GLASS_BOTTOM_SEG2,
+        GLASS_VIGNETTE_SEG2,
         AMBIENT_SEG1_START,
         AMBIENT_SEG1_END
       );
@@ -228,8 +235,10 @@ export default function App() {
       return blend(
         GLASS_TOP_SEG2,
         GLASS_BOTTOM_SEG2,
+        GLASS_VIGNETTE_SEG2,
         GLASS_TOP_SEG3,
         GLASS_BOTTOM_SEG3,
+        GLASS_VIGNETTE_SEG3,
         AMBIENT_SEG1_END,
         AMBIENT_SEG2_END
       );
@@ -237,37 +246,47 @@ export default function App() {
     return blend(
       GLASS_TOP_SEG3,
       GLASS_BOTTOM_SEG3,
+      GLASS_VIGNETTE_SEG3,
       GLASS_TOP_SEG4,
       GLASS_BOTTOM_SEG4,
+      GLASS_VIGNETTE_SEG4,
       AMBIENT_SEG2_END,
       AMBIENT_SEG3_END
     );
   };
 
-  const applyAmbientStyle = (top, bottom) => {
+  const applyAmbientStyle = (top, bottom, vignette) => {
     const el = containerRef.current;
     if (!el) return;
     el.style.setProperty('--glass-top-alpha', top.toFixed(3));
     el.style.setProperty('--glass-bottom-alpha', bottom.toFixed(3));
-    el.style.setProperty('--glass-vignette-alpha', GLASS_VIGNETTE_ALPHA.toFixed(3));
+    el.style.setProperty('--glass-vignette-alpha', vignette.toFixed(3));
   };
 
   const stepAmbient = () => {
-    const { top: targetTop, bottom: targetBottom } = getAmbientTargets(ambientTarget.current);
+    const { top: targetTop, bottom: targetBottom, vignette: targetVignette } = getAmbientTargets(ambientTarget.current);
     const currentTop = ambientTop.current;
     const currentBottom = ambientBottom.current;
+    const currentVignette = ambientVignette.current;
     const nextTop = currentTop + (targetTop - currentTop) * AMBIENT_LERP;
     const nextBottom = currentBottom + (targetBottom - currentBottom) * AMBIENT_LERP;
+    const nextVignette = currentVignette + (targetVignette - currentVignette) * AMBIENT_LERP;
     ambientTop.current = nextTop;
     ambientBottom.current = nextBottom;
-    applyAmbientStyle(nextTop, nextBottom);
-    if (Math.abs(targetTop - nextTop) > 0.0005 || Math.abs(targetBottom - nextBottom) > 0.0005) {
+    ambientVignette.current = nextVignette;
+    applyAmbientStyle(nextTop, nextBottom, nextVignette);
+    if (
+      Math.abs(targetTop - nextTop) > 0.0005 ||
+      Math.abs(targetBottom - nextBottom) > 0.0005 ||
+      Math.abs(targetVignette - nextVignette) > 0.0005
+    ) {
       ambientRaf.current = requestAnimationFrame(stepAmbient);
       return;
     }
     ambientTop.current = targetTop;
     ambientBottom.current = targetBottom;
-    applyAmbientStyle(targetTop, targetBottom);
+    ambientVignette.current = targetVignette;
+    applyAmbientStyle(targetTop, targetBottom, targetVignette);
     ambientRaf.current = 0;
   };
 
@@ -513,7 +532,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    applyAmbientStyle(ambientTop.current, ambientBottom.current);
+    applyAmbientStyle(ambientTop.current, ambientBottom.current, ambientVignette.current);
   }, []);
 
   useEffect(() => {
@@ -827,7 +846,7 @@ export default function App() {
              height: WINDOW_HEIGHT,
              '--glass-top-alpha': GLASS_TOP_SEG4.toFixed(2),
              '--glass-bottom-alpha': GLASS_BOTTOM_SEG4.toFixed(2),
-             '--glass-vignette-alpha': GLASS_VIGNETTE_ALPHA.toFixed(2),
+             '--glass-vignette-alpha': GLASS_VIGNETTE_SEG4.toFixed(2),
            }}
               className={`relative overflow-hidden bg-zinc-950/10 text-zinc-200 font-mono select-none transition-all duration-300 shadow-2xl rounded-xl border border-white/10
               ${isFiring ? 'cursor-crosshair' : 'cursor-default'}
