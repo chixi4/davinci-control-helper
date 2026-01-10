@@ -790,13 +790,17 @@ export default function App() {
          {/* Entire window is draggable; interactive elements opt-out via `button/input/...` or `data-no-drag`. */}
 
          {/* bento-grid 风格背景（偏黑白，带轻微冷暖色偏移） */}
-         <div className="absolute inset-0 z-0 pointer-events-none">
+          <div className="absolute inset-0 z-0 pointer-events-none">
             <div
               className="absolute inset-0"
               style={{
                 backgroundImage:
                   'linear-gradient(180deg, rgba(0,0,0,0.30) 0%, rgba(0,0,0,0.90) 100%)',
               }}
+            />
+            <div
+              className="absolute inset-0 rounded-xl pointer-events-none"
+              style={{ boxShadow: "inset 0 0 96px rgba(0,0,0,0.55)" }}
             />
           </div>
 
