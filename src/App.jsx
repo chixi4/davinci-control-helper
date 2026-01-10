@@ -798,13 +798,6 @@ export default function App() {
                   'radial-gradient(900px circle at 18% 10%, rgba(255,255,255,0.10), transparent 42%), radial-gradient(800px circle at 82% 88%, rgba(255,255,255,0.06), transparent 46%), radial-gradient(520px circle at 18% 86%, rgba(59,130,246,0.10), transparent 58%), radial-gradient(520px circle at 86% 72%, rgba(245,158,11,0.08), transparent 58%), linear-gradient(180deg, rgba(255,255,255,0.04) 0%, rgba(0,0,0,0.18) 45%, rgba(0,0,0,0.60) 100%)',
               }}
             />
-            <div
-              className="absolute inset-0"
-              style={{
-                backgroundImage:
-                  'radial-gradient(ellipse at 50% 88%, rgba(0,0,0,0.18) 0%, rgba(0,0,0,0.65) 78%)',
-              }}
-            />
           </div>
 
          {/* 全屏 Overlay (报错/状态显示) */}
