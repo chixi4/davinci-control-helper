@@ -179,7 +179,7 @@ const AMBIENT_SAMPLE_SOURCE: i32 = 96;
 const AMBIENT_SAMPLE_MARGIN: i32 = 12;
 
 #[cfg(target_os = "windows")]
-const AMBIENT_SAMPLE_INTERVAL_MS: u64 = 200;
+const AMBIENT_SAMPLE_INTERVAL_MS: u64 = 100;
 
 #[cfg(target_os = "windows")]
 const AMBIENT_EMA_ALPHA: f32 = 0.12;
