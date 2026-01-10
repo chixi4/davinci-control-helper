@@ -918,8 +918,12 @@ export default function App() {
                  e.preventDefault();
                  e.stopPropagation();
                }}
-               style={{ left: contextMenu.x, top: contextMenu.y }}
-               className="absolute z-[500] w-56 rounded-xl border border-white/10 bg-zinc-950/85 backdrop-blur-md shadow-[0_12px_40px_rgba(0,0,0,0.55)] p-1 font-sans"
+               style={{
+                 left: contextMenu.x,
+                 top: contextMenu.y,
+                 boxShadow: "inset 0 0 24px rgba(0,0,0,0.45), 0 10px 24px rgba(0,0,0,0.35)",
+               }}
+               className="absolute z-[500] w-56 rounded-xl border border-white/10 bg-zinc-900/65 backdrop-blur-md p-1 font-sans"
              >
                <button
                  data-no-drag
