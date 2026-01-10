@@ -7,6 +7,7 @@ use std::{
   process::{Child, ChildStdin, Command, Stdio},
   sync::{Arc, Mutex},
   thread,
+  time::Duration,
 };
 
 #[cfg(target_os = "windows")]
@@ -22,10 +23,18 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::{
-  Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE, HWND},
+  Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE, HWND, RECT},
+  Graphics::Gdi::{
+    CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, ReleaseDC, SelectObject,
+    SetStretchBltMode, StretchBlt, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS,
+    HALFTONE, HBITMAP, HDC, HGDIOBJ, SRCCOPY,
+  },
   System::LibraryLoader::{GetModuleHandleW, GetProcAddress},
   System::Threading::{CreateMutexW, ReleaseMutex},
-  UI::WindowsAndMessaging::{FindWindowW, SetForegroundWindow, ShowWindow, SW_RESTORE},
+  UI::WindowsAndMessaging::{
+    FindWindowW, GetSystemMetrics, GetWindowRect, SetForegroundWindow, ShowWindow,
+    SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SW_RESTORE,
+  },
 };
 
 #[cfg(target_os = "windows")]
@@ -158,6 +167,328 @@ fn apply_window_acrylic(window: &tauri::Window) {
   unsafe {
     let _ = set_window_composition_attribute(hwnd as HWND, &mut data);
   }
+}
+
+#[cfg(target_os = "windows")]
+const AMBIENT_SAMPLE_SIZE: i32 = 32;
+
+#[cfg(target_os = "windows")]
+const AMBIENT_SAMPLE_SOURCE: i32 = 96;
+
+#[cfg(target_os = "windows")]
+const AMBIENT_SAMPLE_MARGIN: i32 = 12;
+
+#[cfg(target_os = "windows")]
+const AMBIENT_SAMPLE_INTERVAL_MS: u64 = 200;
+
+#[cfg(target_os = "windows")]
+const AMBIENT_EMA_ALPHA: f32 = 0.12;
+
+#[cfg(target_os = "windows")]
+const AMBIENT_EMIT_EPSILON: f32 = 0.005;
+
+#[cfg(target_os = "windows")]
+#[derive(Copy, Clone)]
+struct RectI32 {
+  left: i32,
+  top: i32,
+  right: i32,
+  bottom: i32,
+}
+
+#[cfg(target_os = "windows")]
+impl RectI32 {
+  fn width(&self) -> i32 {
+    self.right - self.left
+  }
+
+  fn height(&self) -> i32 {
+    self.bottom - self.top
+  }
+
+  fn intersects(&self, other: &RectI32) -> bool {
+    self.left < other.right
+      && self.right > other.left
+      && self.top < other.bottom
+      && self.bottom > other.top
+  }
+}
+
+#[cfg(target_os = "windows")]
+fn rect_from_win(rect: RECT) -> RectI32 {
+  RectI32 {
+    left: rect.left,
+    top: rect.top,
+    right: rect.right,
+    bottom: rect.bottom,
+  }
+}
+
+#[cfg(target_os = "windows")]
+fn clamp_rect(rect: RectI32, bounds: RectI32) -> Option<RectI32> {
+  let left = rect.left.max(bounds.left);
+  let top = rect.top.max(bounds.top);
+  let right = rect.right.min(bounds.right);
+  let bottom = rect.bottom.min(bounds.bottom);
+  if right <= left || bottom <= top {
+    return None;
+  }
+  Some(RectI32 {
+    left,
+    top,
+    right,
+    bottom,
+  })
+}
+
+#[cfg(target_os = "windows")]
+struct AmbientSampler {
+  screen_dc: HDC,
+  mem_dc: HDC,
+  dib: HBITMAP,
+  old_obj: HGDIOBJ,
+  bits: *mut u8,
+  width: i32,
+  height: i32,
+}
+
+#[cfg(target_os = "windows")]
+impl AmbientSampler {
+  unsafe fn new() -> Option<Self> {
+    let screen_dc = GetDC(std::ptr::null_mut());
+    if screen_dc.is_null() {
+      return None;
+    }
+
+    let mem_dc = CreateCompatibleDC(screen_dc);
+    if mem_dc.is_null() {
+      let _ = ReleaseDC(std::ptr::null_mut(), screen_dc);
+      return None;
+    }
+
+    let mut bmi: BITMAPINFO = std::mem::zeroed();
+    bmi.bmiHeader = BITMAPINFOHEADER {
+      biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+      biWidth: AMBIENT_SAMPLE_SIZE,
+      biHeight: -AMBIENT_SAMPLE_SIZE,
+      biPlanes: 1,
+      biBitCount: 32,
+      biCompression: BI_RGB,
+      biSizeImage: 0,
+      biXPelsPerMeter: 0,
+      biYPelsPerMeter: 0,
+      biClrUsed: 0,
+      biClrImportant: 0,
+    };
+
+    let mut bits: *mut c_void = std::ptr::null_mut();
+    let dib = CreateDIBSection(
+      mem_dc,
+      &bmi,
+      DIB_RGB_COLORS,
+      &mut bits,
+      std::ptr::null_mut(),
+      0,
+    );
+    if dib.is_null() || bits.is_null() {
+      let _ = DeleteDC(mem_dc);
+      let _ = ReleaseDC(std::ptr::null_mut(), screen_dc);
+      return None;
+    }
+
+    let old_obj = SelectObject(mem_dc, dib as _);
+    let _ = SetStretchBltMode(mem_dc, HALFTONE);
+
+    Some(Self {
+      screen_dc,
+      mem_dc,
+      dib,
+      old_obj,
+      bits: bits as *mut u8,
+      width: AMBIENT_SAMPLE_SIZE,
+      height: AMBIENT_SAMPLE_SIZE,
+    })
+  }
+
+  unsafe fn capture_brightness(&mut self, rect: RectI32) -> Option<f32> {
+    let source_w = rect.width();
+    let source_h = rect.height();
+    if source_w <= 0 || source_h <= 0 {
+      return None;
+    }
+
+    let ok = StretchBlt(
+      self.mem_dc,
+      0,
+      0,
+      self.width,
+      self.height,
+      self.screen_dc,
+      rect.left,
+      rect.top,
+      source_w,
+      source_h,
+      SRCCOPY,
+    );
+    if ok == 0 {
+      return None;
+    }
+
+    if self.bits.is_null() {
+      return None;
+    }
+
+    let total = (self.width * self.height) as usize;
+    let mut sum = 0.0f32;
+    let mut offset = 0usize;
+    for _ in 0..total {
+      let b = *self.bits.add(offset) as f32;
+      let g = *self.bits.add(offset + 1) as f32;
+      let r = *self.bits.add(offset + 2) as f32;
+      sum += 0.2126 * r + 0.7152 * g + 0.0722 * b;
+      offset += 4;
+    }
+
+    let avg = sum / (total as f32 * 255.0);
+    Some(avg.clamp(0.0, 1.0))
+  }
+}
+
+#[cfg(target_os = "windows")]
+impl Drop for AmbientSampler {
+  fn drop(&mut self) {
+    unsafe {
+      if !self.mem_dc.is_null() && !self.old_obj.is_null() {
+        let _ = SelectObject(self.mem_dc, self.old_obj);
+      }
+      if !self.dib.is_null() {
+        let _ = DeleteObject(self.dib as _);
+      }
+      if !self.mem_dc.is_null() {
+        let _ = DeleteDC(self.mem_dc);
+      }
+      if !self.screen_dc.is_null() {
+        let _ = ReleaseDC(std::ptr::null_mut(), self.screen_dc);
+      }
+    }
+  }
+}
+
+#[cfg(target_os = "windows")]
+fn sample_window_brightness(hwnd: HWND, sampler: &mut AmbientSampler) -> Option<f32> {
+  let mut rect = RECT {
+    left: 0,
+    top: 0,
+    right: 0,
+    bottom: 0,
+  };
+
+  let ok = unsafe { GetWindowRect(hwnd, &mut rect) };
+  if ok == 0 {
+    return None;
+  }
+
+  let window = rect_from_win(rect);
+  if window.width() <= 0 || window.height() <= 0 {
+    return None;
+  }
+
+  let v_left = unsafe { GetSystemMetrics(SM_XVIRTUALSCREEN) };
+  let v_top = unsafe { GetSystemMetrics(SM_YVIRTUALSCREEN) };
+  let v_width = unsafe { GetSystemMetrics(SM_CXVIRTUALSCREEN) };
+  let v_height = unsafe { GetSystemMetrics(SM_CYVIRTUALSCREEN) };
+  if v_width <= 0 || v_height <= 0 {
+    return None;
+  }
+
+  let bounds = RectI32 {
+    left: v_left,
+    top: v_top,
+    right: v_left + v_width,
+    bottom: v_top + v_height,
+  };
+
+  let center_x = window.left + window.width() / 2;
+  let center_y = window.top + window.height() / 2;
+  let half = AMBIENT_SAMPLE_SOURCE / 2;
+
+  let candidates = [
+    RectI32 {
+      left: center_x - half,
+      top: window.top - AMBIENT_SAMPLE_MARGIN - AMBIENT_SAMPLE_SOURCE,
+      right: center_x + half,
+      bottom: window.top - AMBIENT_SAMPLE_MARGIN,
+    },
+    RectI32 {
+      left: center_x - half,
+      top: window.bottom + AMBIENT_SAMPLE_MARGIN,
+      right: center_x + half,
+      bottom: window.bottom + AMBIENT_SAMPLE_MARGIN + AMBIENT_SAMPLE_SOURCE,
+    },
+    RectI32 {
+      left: window.left - AMBIENT_SAMPLE_MARGIN - AMBIENT_SAMPLE_SOURCE,
+      top: center_y - half,
+      right: window.left - AMBIENT_SAMPLE_MARGIN,
+      bottom: center_y + half,
+    },
+    RectI32 {
+      left: window.right + AMBIENT_SAMPLE_MARGIN,
+      top: center_y - half,
+      right: window.right + AMBIENT_SAMPLE_MARGIN + AMBIENT_SAMPLE_SOURCE,
+      bottom: center_y + half,
+    },
+  ];
+
+  let mut sum = 0.0f32;
+  let mut count = 0u32;
+  for rect in candidates {
+    let Some(clamped) = clamp_rect(rect, bounds) else {
+      continue;
+    };
+    if clamped.intersects(&window) {
+      continue;
+    }
+    let Some(value) = (unsafe { sampler.capture_brightness(clamped) }) else {
+      continue;
+    };
+    sum += value;
+    count += 1;
+  }
+
+  if count == 0 {
+    None
+  } else {
+    Some(sum / count as f32)
+  }
+}
+
+#[cfg(target_os = "windows")]
+fn start_ambient_sampler(app: tauri::AppHandle, hwnd: isize) {
+  thread::spawn(move || {
+    let mut sampler = match unsafe { AmbientSampler::new() } {
+      Some(sampler) => sampler,
+      None => return,
+    };
+    let mut smooth = 1.0f32;
+    let mut last_emit = smooth;
+    let hwnd = hwnd as HWND;
+
+    loop {
+      if let Some(sample) = sample_window_brightness(hwnd, &mut sampler) {
+        smooth += (sample - smooth) * AMBIENT_EMA_ALPHA;
+        smooth = smooth.clamp(0.0, 1.0);
+      }
+
+      if (smooth - last_emit).abs() >= AMBIENT_EMIT_EPSILON {
+        if app.emit_all("ambient-brightness", smooth).is_err() {
+          break;
+        }
+        last_emit = smooth;
+      }
+
+      thread::sleep(Duration::from_millis(AMBIENT_SAMPLE_INTERVAL_MS));
+    }
+  });
 }
 
 #[derive(Default, Clone)]
@@ -532,6 +863,9 @@ fn main() {
       {
         if let Some(window) = app.get_window("main") {
           apply_window_acrylic(&window);
+          if let Ok(hwnd) = window.hwnd() {
+            start_ambient_sampler(app.handle(), hwnd.0 as isize);
+          }
         }
       }
       Ok(())
