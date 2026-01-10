@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Mouse, Crosshair, RefreshCw, Copy, Minus, X, Loader2, AlertCircle, CheckCircle } from 'lucide-react';
+import { Mouse, Crosshair, RefreshCw, Minus, X, Loader2, AlertCircle, CheckCircle } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
 const isTauri = typeof window !== 'undefined' && typeof window.__TAURI_IPC__ === 'function';
@@ -148,6 +148,10 @@ export default function App() {
   const fireTimer = useRef(null);
   const lastMousePos = useRef(null);
   const containerRef = useRef(null);
+  const dragArmed = useRef(false);
+  const dragStart = useRef(null);
+  const lastWindowClick = useRef(0);
+  const lastWindowClickPos = useRef(null);
   const debounceTimer = useRef(null);
   const syncTimer = useRef(null);
   const resetPulseTimer = useRef(null);
@@ -181,32 +185,6 @@ export default function App() {
   };
 
   const closeContextMenu = () => setContextMenu(null);
-
-  const copyTextToClipboard = async (text) => {
-    try {
-      if (navigator?.clipboard?.writeText) {
-        await navigator.clipboard.writeText(text);
-        return true;
-      }
-    } catch {}
-
-    try {
-      const el = document.createElement('textarea');
-      el.value = text;
-      el.setAttribute('readonly', '');
-      el.style.position = 'fixed';
-      el.style.top = '-9999px';
-      el.style.opacity = '0';
-      document.body.appendChild(el);
-      el.focus();
-      el.select();
-      const ok = document.execCommand('copy');
-      document.body.removeChild(el);
-      return ok;
-    } catch {}
-
-    return false;
-  };
 
   const requestClose = () => {
     if (isClosing || closeRequested.current) return;
@@ -252,6 +230,31 @@ export default function App() {
     setIsCrosshairActive(next);
     setIsFiring(false);
     tauriInvoke('backend_set_feature', { enabled: next }).catch(() => {});
+  };
+
+  const applyUiReset = () => {
+    setIsCrosshairActive(false);
+    setIsFiring(false);
+    isCrosshairActiveRef.current = false;
+    setFullScreenStatus(null);
+    setNotifications([]);
+    setPhase('SCAN');
+    setShakeProgress(0);
+    setMouseStatus('OFF');
+    mouseStatusRef.current = 'OFF';
+    setSensitivity(1.0);
+    pendingSensitivity.current = null;
+    pendingPower.current = null;
+    setIsSyncing(false);
+    tauriShowAndFocus().catch(() => {});
+  };
+
+  const requestUnbindMouse = () => {
+    closeContextMenu();
+    applyUiReset();
+    if (isTauri) {
+      tauriInvoke('backend_full_reset').catch(() => {});
+    }
   };
 
   useEffect(() => {
@@ -385,20 +388,7 @@ export default function App() {
           }
 
           if (kind === 'RESET') {
-            setIsCrosshairActive(false);
-            setIsFiring(false);
-            isCrosshairActiveRef.current = false;
-            setFullScreenStatus(null);
-            setNotifications([]);
-            setPhase('SCAN');
-            setShakeProgress(0);
-            setMouseStatus('OFF');
-            mouseStatusRef.current = 'OFF';
-            setSensitivity(1.0);
-            pendingSensitivity.current = null;
-            pendingPower.current = null;
-            setIsSyncing(false);
-            tauriShowAndFocus().catch(() => {});
+            applyUiReset();
             return;
           }
 
@@ -570,8 +560,33 @@ export default function App() {
   // --- 键盘事件监听 ---
   useEffect(() => {
     const handleKey = (e) => {
-      if (phase === 'DASHBOARD' && e.key.toLowerCase() === 'r') {
-        setSensitivity(1.0);
+      const key = e.key.toLowerCase();
+      const isResetKey = e.code === 'KeyR' || key === 'r';
+
+      if (isTauri && e.ctrlKey && key === 'r') {
+        e.preventDefault();
+        window.location.reload();
+        return;
+      }
+
+      if (isTauri && e.ctrlKey && key === 'm') {
+        e.preventDefault();
+        tauriMinimize().catch(() => {});
+        return;
+      }
+
+      if (isTauri && e.ctrlKey && key === 'q') {
+        e.preventDefault();
+        requestClose();
+        return;
+      }
+
+      if (phase === 'DASHBOARD' && isResetKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        if (sensitivity !== 1.0) {
+          setSensitivity(1.0);
+        } else {
+          triggerResetPulse();
+        }
       }
 
       // --- [后端注意] CapsLock 双击逻辑 ---
@@ -584,34 +599,19 @@ export default function App() {
       // 意图：利用转场动画本身的时间（约0.5-0.8秒）来掩盖后端重置所需的1秒耗时。
       // 后端请在收到此信号后，在后台异步执行重置操作。
       // Tauri 模式下改为后端全局监听（即使窗口在后台也生效）
-      if (!isTauri && e.key === 'CapsLock') {
+      if (!isTauri && (e.code === 'CapsLock' || e.key === 'CapsLock')) {
         const now = Date.now();
         if (now - lastCapsLockTime.current < 300) {
           if (phase === 'DASHBOARD') {
-            // 立即重置所有功能开关
-            isCrosshairActiveRef.current = false;
-            mouseStatusRef.current = 'OFF';
-            setIsCrosshairActive(false);
-            setIsFiring(false);
-            setFullScreenStatus(null);
-            setNotifications([]);
-            setSensitivity(1.0);
-            pendingSensitivity.current = null;
-            setIsSyncing(false);
-
-            // 立即触发界面切换，动画与逻辑并行
-            setPhase('SCAN');
-            setShakeProgress(0);
-            setMouseStatus('OFF');
-            tauriInvoke('backend_full_reset').catch(() => {});
+            applyUiReset();
           }
         }
         lastCapsLockTime.current = now;
       }
     };
-    window.addEventListener('keydown', handleKey);
-    return () => window.removeEventListener('keydown', handleKey);
-  }, [phase]); 
+    window.addEventListener('keydown', handleKey, true);
+    return () => window.removeEventListener('keydown', handleKey, true);
+  }, [phase, sensitivity]); 
 
   const sliderPercent = fromSplitScale(sensitivity);
   const syncActive = isSyncing || resetPulse;
@@ -717,25 +717,56 @@ export default function App() {
  
              const target = e.target instanceof Element ? e.target : null;
              if (target) {
-                if (target.closest('button, input, textarea, select, option, a, [data-no-drag]')) {
-                return;
-              }
-            }
- 
-             tauriStartDragging().catch(() => {});
-           }}
-            onDoubleClick={(e) => {
-             if (!isTauri) return;
-             if (e.button !== 0) return;
-
-             const target = e.target instanceof Element ? e.target : null;
-             if (target) {
                if (target.closest('button, input, textarea, select, option, a, [data-no-drag]')) {
                  return;
                }
              }
 
-             tauriMinimize().catch(() => {});
+             const now = Date.now();
+             const last = lastWindowClick.current;
+             const lastPos = lastWindowClickPos.current;
+             const sameSpot = lastPos
+               ? Math.hypot(e.clientX - lastPos.x, e.clientY - lastPos.y) <= 6
+               : false;
+
+             if (last && now - last < 320 && sameSpot) {
+               lastWindowClick.current = 0;
+               lastWindowClickPos.current = null;
+               dragArmed.current = false;
+               dragStart.current = null;
+               tauriMinimize().catch(() => {});
+               return;
+             }
+
+             lastWindowClick.current = now;
+             lastWindowClickPos.current = { x: e.clientX, y: e.clientY };
+             dragArmed.current = true;
+             dragStart.current = { x: e.clientX, y: e.clientY };
+           }}
+            onMouseMove={(e) => {
+             if (!isTauri) return;
+             if (!dragArmed.current) return;
+             if ((e.buttons & 1) !== 1) {
+               dragArmed.current = false;
+               dragStart.current = null;
+               return;
+             }
+             const start = dragStart.current;
+             if (!start) return;
+             const distance = Math.hypot(e.clientX - start.x, e.clientY - start.y);
+             if (distance < 4) return;
+
+             dragArmed.current = false;
+             dragStart.current = null;
+             tauriStartDragging().catch(() => {});
+           }}
+            onMouseUp={() => {
+             dragArmed.current = false;
+             dragStart.current = null;
+           }}
+            onMouseLeave={() => {
+             dragArmed.current = false;
+             dragStart.current = null;
            }}
             onContextMenu={(e) => {
               e.preventDefault();
@@ -746,7 +777,7 @@ export default function App() {
               const baseY = rect ? e.clientY - rect.top : e.clientY;
 
               const menuWidth = 224;
-              const menuHeight = 252;
+              const menuHeight = 300;
               const margin = 8;
 
               const x = Math.max(margin, Math.min(baseX, WINDOW_WIDTH - menuWidth - margin));
@@ -903,25 +934,11 @@ export default function App() {
                  e.stopPropagation();
                }}
                style={{ left: contextMenu.x, top: contextMenu.y }}
-               className="absolute z-[500] w-56 rounded-xl border border-white/10 bg-zinc-950/85 backdrop-blur-md shadow-[0_12px_40px_rgba(0,0,0,0.55)] p-1"
+               className="absolute z-[500] w-56 rounded-xl border border-white/10 bg-zinc-950/85 backdrop-blur-md shadow-[0_12px_40px_rgba(0,0,0,0.55)] p-1 font-sans"
              >
                <button
                  data-no-drag
-                 className="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-white/5 text-[11px] font-bold tracking-[0.18em] text-zinc-200"
-                 onClick={async () => {
-                   const ok = await copyTextToClipboard(sensitivity.toFixed(2));
-                   addNotification(ok ? 'success' : 'error', ok ? '已复制灵敏度' : '复制失败');
-                   closeContextMenu();
-                 }}
-               >
-                 <Copy size={14} className="text-zinc-400" />
-                 <span className="flex-1 text-left">复制灵敏度</span>
-                 <span className="text-zinc-500 tabular-nums">{sensitivity.toFixed(2)}</span>
-               </button>
-
-               <button
-                 data-no-drag
-                 className="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-white/5 text-[11px] font-bold tracking-[0.18em] text-zinc-200"
+                 className="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-white/5 text-[12px] font-medium tracking-[0.04em] text-zinc-200"
                  onClick={() => {
                    if (sensitivity !== 1.0) {
                      setSensitivity(1.0);
@@ -933,6 +950,20 @@ export default function App() {
                >
                  <RefreshCw size={14} className="text-amber-400" />
                  <span className="flex-1 text-left">重置为 1.00</span>
+                 <span className="ml-auto text-[10px] text-zinc-500 tracking-[0.1em]">R</span>
+               </button>
+
+               <button
+                 data-no-drag
+                 className="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-white/5 text-[12px] font-medium tracking-[0.04em] text-zinc-200"
+                 onClick={() => {
+                   window.location.reload();
+                   closeContextMenu();
+                 }}
+               >
+                 <RefreshCw size={14} className="text-zinc-400" />
+                 <span className="flex-1 text-left">刷新</span>
+                 <span className="ml-auto text-[10px] text-zinc-500 tracking-[0.1em]">Ctrl+R</span>
                </button>
 
                <div className="my-1 h-px bg-white/10" />
@@ -940,7 +971,7 @@ export default function App() {
                <button
                  data-no-drag
                  disabled={isProcessing}
-                 className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg text-[11px] font-bold tracking-[0.18em]
+                 className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg text-[12px] font-medium tracking-[0.04em]
                    ${isProcessing ? 'opacity-50 cursor-not-allowed' : 'hover:bg-white/5'}
                    text-zinc-200
                  `}
@@ -948,16 +979,16 @@ export default function App() {
                    handleMouseToggle();
                    closeContextMenu();
                  }}
-               >
-                 <Mouse size={14} className={isMouseActive ? 'text-blue-400' : 'text-zinc-400'} />
-                 <span className="flex-1 text-left">总开关</span>
-                 <span className={`text-zinc-500 ${isMouseActive ? 'text-blue-400' : ''}`}>{isMouseActive ? '开' : '关'}</span>
-               </button>
+                >
+                  <Mouse size={14} className={isMouseActive ? 'text-blue-400' : 'text-zinc-400'} />
+                  <span className="flex-1 text-left">鼠标接管</span>
+                  <span className={`text-zinc-500 ${isMouseActive ? 'text-blue-400' : ''}`}>{isMouseActive ? '开' : '关'}</span>
+                </button>
 
                <button
                  data-no-drag
                  disabled={!isMouseActive}
-                 className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg text-[11px] font-bold tracking-[0.18em]
+                 className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg text-[12px] font-medium tracking-[0.04em]
                    ${isMouseActive ? 'hover:bg-white/5' : 'opacity-50 cursor-not-allowed'}
                    text-zinc-200
                  `}
@@ -965,20 +996,30 @@ export default function App() {
                    requestCrosshairToggle();
                    closeContextMenu();
                  }}
+                >
+                  <Crosshair
+                    size={14}
+                    className={isFiring ? 'text-emerald-400' : isCrosshairActive ? 'text-amber-400' : 'text-zinc-400'}
+                  />
+                  <span className="flex-1 text-left">自动按键</span>
+                  <span className={`text-zinc-500 ${isCrosshairActive ? 'text-amber-400' : ''}`}>{isCrosshairActive ? '开' : '关'}</span>
+                </button>
+
+               <button
+                 data-no-drag
+                 className="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-white/5 text-[12px] font-medium tracking-[0.04em] text-zinc-200"
+                 onClick={requestUnbindMouse}
                >
-                 <Crosshair
-                   size={14}
-                   className={isFiring ? 'text-emerald-400' : isCrosshairActive ? 'text-amber-400' : 'text-zinc-400'}
-                 />
-                 <span className="flex-1 text-left">自动按键</span>
-                 <span className={`text-zinc-500 ${isCrosshairActive ? 'text-amber-400' : ''}`}>{isCrosshairActive ? '开' : '关'}</span>
+                 <Mouse size={14} className="text-red-400/80" />
+                 <span className="flex-1 text-left">解绑鼠标</span>
+                 <span className="ml-auto text-[10px] text-red-300/80 tracking-[0.1em]">Caps x2</span>
                </button>
 
                <div className="my-1 h-px bg-white/10" />
 
                <button
                  data-no-drag
-                 className="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-white/5 text-[11px] font-bold tracking-[0.18em] text-zinc-200"
+                 className="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-white/5 text-[12px] font-medium tracking-[0.04em] text-zinc-200"
                  onClick={() => {
                    tauriMinimize().catch(() => {});
                    closeContextMenu();
@@ -986,15 +1027,17 @@ export default function App() {
                >
                  <Minus size={14} className="text-zinc-400" />
                  <span className="flex-1 text-left">最小化</span>
+                 <span className="ml-auto text-[10px] text-zinc-500 tracking-[0.1em]">Ctrl+M</span>
                </button>
 
                <button
                  data-no-drag
-                 className="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-red-500/10 text-[11px] font-bold tracking-[0.18em] text-zinc-200"
+                 className="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-red-500/10 text-[12px] font-medium tracking-[0.04em] text-zinc-200"
                  onClick={requestClose}
                >
                  <X size={14} className="text-red-400" />
                  <span className="flex-1 text-left">退出</span>
+                 <span className="ml-auto text-[10px] text-red-300/80 tracking-[0.1em]">Ctrl+Q</span>
                </button>
              </motion.div>
            )}

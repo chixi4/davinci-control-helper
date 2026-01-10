@@ -67,14 +67,12 @@ async function main() {
   }
 
   const settingsDest = path.join(targetBackendDir, 'settings.json');
-  if (!(await exists(settingsDest))) {
-    const srcSettings = (await exists(path.join(repoRoot, 'settings.json')))
-      ? path.join(repoRoot, 'settings.json')
-      : path.join(repoRoot, 'settings.example.json');
+  const srcSettings = (await exists(path.join(repoRoot, 'settings.json')))
+    ? path.join(repoRoot, 'settings.json')
+    : path.join(repoRoot, 'settings.example.json');
 
-    const ok = await copyIfExists(srcSettings, settingsDest);
-    if (!ok) missing.push('settings.example.json');
-  }
+  const ok = await copyIfExists(srcSettings, settingsDest);
+  if (!ok) missing.push('settings.example.json');
 
   if (missing.length) {
     // Fail the build so users don't end up with a GUI that can't function.
