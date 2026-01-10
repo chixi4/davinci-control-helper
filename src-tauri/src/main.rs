@@ -24,6 +24,7 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::{
   Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE, HWND, RECT},
+  Graphics::Dwm::DwmSetWindowAttribute,
   Graphics::Gdi::{
     CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, ReleaseDC, SelectObject,
     SetStretchBltMode, StretchBlt, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS,
@@ -504,6 +505,29 @@ fn start_ambient_sampler(app: tauri::AppHandle, hwnd: isize) {
   });
 }
 
+#[cfg(target_os = "windows")]
+const DWMWA_WINDOW_CORNER_PREFERENCE: u32 = 33;
+
+#[cfg(target_os = "windows")]
+const DWMWCP_ROUND: u32 = 2;
+
+#[cfg(target_os = "windows")]
+fn apply_window_rounding(window: &tauri::Window) {
+  let hwnd = match window.hwnd() {
+    Ok(hwnd) => hwnd.0 as isize,
+    Err(_) => return,
+  };
+
+  let preference: u32 = DWMWCP_ROUND;
+  unsafe {
+    let _ = DwmSetWindowAttribute(
+      hwnd as HWND,
+      DWMWA_WINDOW_CORNER_PREFERENCE,
+      &preference as *const _ as *const c_void,
+      std::mem::size_of::<u32>() as u32,
+    );
+  }
+}
 #[derive(Default, Clone)]
 struct BackendSnapshot {
   input_ready: bool,
@@ -876,6 +900,10 @@ fn main() {
       {
         if let Some(window) = app.get_window("main") {
           apply_window_acrylic(&window);
+          if let Ok(hwnd) = window.hwnd() {
+            start_ambient_sampler(app.handle(), hwnd.0 as isize);
+          }
+          apply_window_rounding(&window);
           if let Ok(hwnd) = window.hwnd() {
             start_ambient_sampler(app.handle(), hwnd.0 as isize);
           }
