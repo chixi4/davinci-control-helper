@@ -134,6 +134,7 @@ export default function App() {
   
   const [notifications, setNotifications] = useState([]);
   const [fullScreenStatus, setFullScreenStatus] = useState(null);
+  const [ambientBrightness, setAmbientBrightness] = useState(1.0);
   
   // 退出状态：用于处理点击关闭按钮后的延迟逻辑
   const [isClosing, setIsClosing] = useState(false);
@@ -425,6 +426,27 @@ export default function App() {
     };
   }, []);
 
+  useEffect(() => {
+    if (!isTauri) return;
+
+    let unlisten = null;
+
+    (async () => {
+      try {
+        unlisten = await tauriListen('ambient-brightness', (event) => {
+          const raw = event?.payload;
+          const value = typeof raw === 'number' ? raw : Number.parseFloat(raw);
+          if (!Number.isFinite(value)) return;
+          setAmbientBrightness(Math.max(0, Math.min(1, value)));
+        });
+      } catch {}
+    })();
+
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, []);
+
   // 模拟开机启动时间
   useEffect(() => {
     if (phase === 'DASHBOARD') {
@@ -689,6 +711,11 @@ export default function App() {
 
   const isMouseActive = mouseStatus === 'ON'; 
   const isProcessing = mouseStatus === 'BOOTING' || mouseStatus === 'SHUTTING_DOWN';
+  const ambient = Math.max(0, Math.min(1, ambientBrightness));
+  const ambientT = Math.max(0, Math.min(1, (ambient - 0.05) / 0.15));
+  const glassTopAlpha = 0.20 + (0.30 - 0.20) * ambientT;
+  const glassBottomAlpha = 0.40 + (0.90 - 0.40) * ambientT;
+  const glassVignetteAlpha = 0.25;
 
   return (
     <div
@@ -703,8 +730,11 @@ export default function App() {
        */}
         <div
            ref={containerRef}
-           style={{ width: WINDOW_WIDTH, height: WINDOW_HEIGHT }}
-             className={`relative overflow-hidden bg-zinc-950/20 text-zinc-200 font-mono select-none transition-all duration-300 shadow-2xl rounded-xl border border-white/10
+           style={{
+             width: WINDOW_WIDTH,
+             height: WINDOW_HEIGHT,
+           }}
+              className={`relative overflow-hidden bg-zinc-950/10 text-zinc-200 font-mono select-none transition-all duration-300 shadow-2xl rounded-xl border border-white/10
               ${isFiring ? 'cursor-crosshair' : 'cursor-default'}
             `}
             onMouseDown={(e) => {
@@ -794,13 +824,12 @@ export default function App() {
             <div
               className="absolute inset-0"
               style={{
-                backgroundImage:
-                  'linear-gradient(180deg, rgba(0,0,0,0.30) 0%, rgba(0,0,0,0.90) 100%)',
+                backgroundImage: `linear-gradient(180deg, rgba(0,0,0,${glassTopAlpha.toFixed(3)}) 0%, rgba(0,0,0,${glassBottomAlpha.toFixed(3)}) 100%)`,
               }}
             />
             <div
               className="absolute inset-0 rounded-xl pointer-events-none"
-              style={{ boxShadow: "inset 0 0 96px rgba(0,0,0,0.55)" }}
+              style={{ boxShadow: `inset 0 0 96px rgba(0,0,0,${glassVignetteAlpha.toFixed(3)})` }}
             />
           </div>
 
