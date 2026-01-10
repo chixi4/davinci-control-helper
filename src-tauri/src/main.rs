@@ -23,6 +23,7 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::{
   Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE, HWND},
+  Graphics::Dwm::DwmSetWindowAttribute,
   System::LibraryLoader::{GetModuleHandleW, GetProcAddress},
   System::Threading::{CreateMutexW, ReleaseMutex},
   UI::WindowsAndMessaging::{FindWindowW, SetForegroundWindow, ShowWindow, SW_RESTORE},
@@ -157,6 +158,30 @@ fn apply_window_acrylic(window: &tauri::Window) {
 
   unsafe {
     let _ = set_window_composition_attribute(hwnd as HWND, &mut data);
+  }
+}
+
+#[cfg(target_os = "windows")]
+const DWMWA_WINDOW_CORNER_PREFERENCE: u32 = 33;
+
+#[cfg(target_os = "windows")]
+const DWMWCP_ROUND: u32 = 2;
+
+#[cfg(target_os = "windows")]
+fn apply_window_rounding(window: &tauri::Window) {
+  let hwnd = match window.hwnd() {
+    Ok(hwnd) => hwnd.0 as isize,
+    Err(_) => return,
+  };
+
+  let preference: u32 = DWMWCP_ROUND;
+  unsafe {
+    let _ = DwmSetWindowAttribute(
+      hwnd as HWND,
+      DWMWA_WINDOW_CORNER_PREFERENCE,
+      &preference as *const _ as *const c_void,
+      std::mem::size_of::<u32>() as u32,
+    );
   }
 }
 
@@ -532,6 +557,7 @@ fn main() {
       {
         if let Some(window) = app.get_window("main") {
           apply_window_acrylic(&window);
+          apply_window_rounding(&window);
         }
       }
       Ok(())
