@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Mouse, Crosshair, RefreshCw, Minus, X, Loader2, AlertCircle, CheckCircle } from 'lucide-react';
+import { Mouse, Crosshair, RefreshCw, Copy, Minus, X, Loader2, AlertCircle, CheckCircle } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
 const isTauri = typeof window !== 'undefined' && typeof window.__TAURI_IPC__ === 'function';
@@ -121,6 +121,7 @@ export default function App() {
   // 同步状态：用于展示调节灵敏度时的 1秒 等待动画
   const [isSyncing, setIsSyncing] = useState(false);
   const [resetPulse, setResetPulse] = useState(false);
+  const [shutdownPulse, setShutdownPulse] = useState(false);
   
   // 瞄准镜状态：对应 CLI 中的 'p' 键（自动按左键功能开关）
   const [isCrosshairActive, setIsCrosshairActive] = useState(false);
@@ -136,6 +137,7 @@ export default function App() {
   
   // 退出状态：用于处理点击关闭按钮后的延迟逻辑
   const [isClosing, setIsClosing] = useState(false);
+  const [contextMenu, setContextMenu] = useState(null);
 
   // 自动开火状态：当 isCrosshairActive 为 true 且触发逻辑时，变为 true (变绿)
   const [isFiring, setIsFiring] = useState(false);
@@ -145,9 +147,11 @@ export default function App() {
   
   const fireTimer = useRef(null);
   const lastMousePos = useRef(null);
+  const containerRef = useRef(null);
   const debounceTimer = useRef(null);
   const syncTimer = useRef(null);
   const resetPulseTimer = useRef(null);
+  const shutdownPulseTimer = useRef(null);
   const isFirstRender = useRef(true);
   const pendingSensitivity = useRef(null);
   const skipNextSensitivitySend = useRef(false);
@@ -175,6 +179,96 @@ export default function App() {
       setNotifications(prev => prev.filter(n => n.id !== id));
     }, 3000);
   };
+
+  const closeContextMenu = () => setContextMenu(null);
+
+  const copyTextToClipboard = async (text) => {
+    try {
+      if (navigator?.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+        return true;
+      }
+    } catch {}
+
+    try {
+      const el = document.createElement('textarea');
+      el.value = text;
+      el.setAttribute('readonly', '');
+      el.style.position = 'fixed';
+      el.style.top = '-9999px';
+      el.style.opacity = '0';
+      document.body.appendChild(el);
+      el.focus();
+      el.select();
+      const ok = document.execCommand('copy');
+      document.body.removeChild(el);
+      return ok;
+    } catch {}
+
+    return false;
+  };
+
+  const requestClose = () => {
+    if (isClosing || closeRequested.current) return;
+    closeRequested.current = true;
+    closeContextMenu();
+
+    if (!isTauri) {
+      window.close?.();
+      return;
+    }
+
+    tauriInvoke('ui_save_state', { state: { crosshairMemory: crosshairMemory.current } }).catch(() => {});
+
+    let finished = false;
+    const timeoutId = window.setTimeout(() => {
+      if (finished) return;
+      finished = true;
+      pendingExit.current = null;
+      tauriClose().catch(() => {});
+    }, 8000);
+
+    pendingExit.current = () => {
+      if (finished) return;
+      finished = true;
+      window.clearTimeout(timeoutId);
+      tauriClose().catch(() => {});
+    };
+
+    tauriInvoke('backend_quit').catch(() => {
+      const done = pendingExit.current;
+      pendingExit.current = null;
+      if (typeof done === 'function') done();
+    });
+  };
+
+  const requestCrosshairToggle = () => {
+    if (!isMouseActive) return;
+
+    const next = !isCrosshairActive;
+    crosshairMemory.current = next;
+    tauriInvoke('ui_save_state', { state: { crosshairMemory: next } }).catch(() => {});
+    isCrosshairActiveRef.current = next;
+    setIsCrosshairActive(next);
+    setIsFiring(false);
+    tauriInvoke('backend_set_feature', { enabled: next }).catch(() => {});
+  };
+
+  useEffect(() => {
+    if (!contextMenu) return;
+
+    const handleMouseDown = () => setContextMenu(null);
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape') setContextMenu(null);
+    };
+
+    window.addEventListener('mousedown', handleMouseDown);
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('mousedown', handleMouseDown);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [contextMenu]);
 
   useEffect(() => {
     isCrosshairActiveRef.current = isCrosshairActive;
@@ -419,6 +513,9 @@ export default function App() {
       if (resetPulseTimer.current) {
         clearTimeout(resetPulseTimer.current);
       }
+      if (shutdownPulseTimer.current) {
+        clearTimeout(shutdownPulseTimer.current);
+      }
     };
   }, []);
 
@@ -529,6 +626,16 @@ export default function App() {
     }, 600);
   };
 
+  const triggerShutdownPulse = () => {
+    if (shutdownPulseTimer.current) {
+      clearTimeout(shutdownPulseTimer.current);
+    }
+    setShutdownPulse(true);
+    shutdownPulseTimer.current = setTimeout(() => {
+      setShutdownPulse(false);
+    }, 700);
+  };
+
   // --- [后端注意] 左下角鼠标按钮逻辑 ---
   // 开关逻辑：
   // 关 (OFF): 
@@ -538,6 +645,10 @@ export default function App() {
   //   - 记忆功能：如果上次关机前右边的瞄准镜是开着的，这次开机也要自动打开。
   const handleMouseToggle = () => {
     if (mouseStatus === 'OFF') {
+      if (shutdownPulseTimer.current) {
+        clearTimeout(shutdownPulseTimer.current);
+      }
+      setShutdownPulse(false);
       mouseStatusRef.current = 'BOOTING';
       setMouseStatus('BOOTING');
       if (isTauri) {
@@ -554,6 +665,7 @@ export default function App() {
         }
       }, 1000);
     } else if (mouseStatus === 'ON') {
+      triggerShutdownPulse();
       crosshairMemory.current = isCrosshairActive;
       tauriInvoke('ui_save_state', { state: { crosshairMemory: crosshairMemory.current } }).catch(() => {});
 
@@ -589,25 +701,60 @@ export default function App() {
          注意：整个窗口除了特定的按钮和拉条区域外，
          都应该支持拖拽移动 (通过 CSS WebkitAppRegion: 'drag' 实现)。
        */}
-       <div 
-          style={{ width: WINDOW_WIDTH, height: WINDOW_HEIGHT }}
-           className={`relative overflow-hidden bg-zinc-950 text-zinc-200 font-mono select-none transition-all duration-300 shadow-2xl rounded-xl border border-white/10
-             ${isFiring ? 'cursor-crosshair' : 'cursor-default'}
-           `}
-           onMouseDown={(e) => {
-            if (!isTauri) return;
-            if (e.button !== 0) return;
-
-            const target = e.target instanceof Element ? e.target : null;
-            if (target) {
-              if (target.closest('button, input, textarea, select, option, a, [data-no-drag]')) {
+        <div
+           ref={containerRef}
+           style={{ width: WINDOW_WIDTH, height: WINDOW_HEIGHT }}
+            className={`relative overflow-hidden bg-zinc-950 text-zinc-200 font-mono select-none transition-all duration-300 shadow-2xl rounded-xl border border-white/10
+              ${isFiring ? 'cursor-crosshair' : 'cursor-default'}
+            `}
+            onMouseDown={(e) => {
+             if (!isTauri) return;
+             if (contextMenu) {
+               setContextMenu(null);
+               return;
+             }
+             if (e.button !== 0) return;
+ 
+             const target = e.target instanceof Element ? e.target : null;
+             if (target) {
+                if (target.closest('button, input, textarea, select, option, a, [data-no-drag]')) {
                 return;
               }
             }
+ 
+             tauriStartDragging().catch(() => {});
+           }}
+            onDoubleClick={(e) => {
+             if (!isTauri) return;
+             if (e.button !== 0) return;
 
-            tauriStartDragging().catch(() => {});
-          }}
-        >
+             const target = e.target instanceof Element ? e.target : null;
+             if (target) {
+               if (target.closest('button, input, textarea, select, option, a, [data-no-drag]')) {
+                 return;
+               }
+             }
+
+             tauriMinimize().catch(() => {});
+           }}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+
+              const rect = containerRef.current?.getBoundingClientRect?.();
+              const baseX = rect ? e.clientX - rect.left : e.clientX;
+              const baseY = rect ? e.clientY - rect.top : e.clientY;
+
+              const menuWidth = 224;
+              const menuHeight = 252;
+              const margin = 8;
+
+              const x = Math.max(margin, Math.min(baseX, WINDOW_WIDTH - menuWidth - margin));
+              const y = Math.max(margin, Math.min(baseY, WINDOW_HEIGHT - menuHeight - margin));
+
+              setContextMenu({ x, y });
+            }}
+         >
 
          {/* Entire window is draggable; interactive elements opt-out via `button/input/...` or `data-no-drag`. */}
 
@@ -641,9 +788,9 @@ export default function App() {
            />
          </div>
 
-        {/* 全屏 Overlay (报错/状态显示) */}
-        <AnimatePresence>
-          {fullScreenStatus && FULLSCREEN_CONFIG[fullScreenStatus] && (
+         {/* 全屏 Overlay (报错/状态显示) */}
+         <AnimatePresence>
+           {fullScreenStatus && FULLSCREEN_CONFIG[fullScreenStatus] && (
             <motion.div
               key="fullscreen-overlay"
               initial={{ opacity: 0, backdropFilter: "blur(0px)" }}
@@ -690,8 +837,8 @@ export default function App() {
           )}
         </AnimatePresence>
 
-        {/* 顶部通知列表 */}
-        <div className="absolute top-8 left-0 w-full flex justify-center z-[400] pointer-events-none">
+         {/* 顶部通知列表 */}
+         <div className="absolute top-8 left-0 w-full flex justify-center z-[400] pointer-events-none">
             <AnimatePresence mode='popLayout'>
                 {notifications.map((notif, index) => {
                     const isError = notif.type === 'error';
@@ -738,11 +885,124 @@ export default function App() {
                     );
                 })}
             </AnimatePresence>
-        </div>
+         </div>
 
-        {/* --- [后端注意] 右上角关闭按钮 --- */}
-        {/* 对应 CLI 逻辑：'q' 命令，关闭程序。 */}
-        {/* 重要：需要等待后端恢复灵敏度完成后再关闭窗口（避免关闭后鼠标还“卡”一会）。 */}
+         {/* 右键菜单（替换 WebView 默认菜单） */}
+         <AnimatePresence>
+           {contextMenu && (
+             <motion.div
+               key="context-menu"
+               initial={{ opacity: 0, scale: 0.98, y: 4 }}
+               animate={{ opacity: 1, scale: 1, y: 0 }}
+               exit={{ opacity: 0, scale: 0.98, y: 4 }}
+               transition={{ duration: 0.12, ease: 'easeOut' }}
+               data-no-drag
+               onMouseDown={(e) => e.stopPropagation()}
+               onContextMenu={(e) => {
+                 e.preventDefault();
+                 e.stopPropagation();
+               }}
+               style={{ left: contextMenu.x, top: contextMenu.y }}
+               className="absolute z-[500] w-56 rounded-xl border border-white/10 bg-zinc-950/85 backdrop-blur-md shadow-[0_12px_40px_rgba(0,0,0,0.55)] p-1"
+             >
+               <button
+                 data-no-drag
+                 className="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-white/5 text-[11px] font-bold tracking-[0.18em] text-zinc-200"
+                 onClick={async () => {
+                   const ok = await copyTextToClipboard(sensitivity.toFixed(2));
+                   addNotification(ok ? 'success' : 'error', ok ? '已复制灵敏度' : '复制失败');
+                   closeContextMenu();
+                 }}
+               >
+                 <Copy size={14} className="text-zinc-400" />
+                 <span className="flex-1 text-left">复制灵敏度</span>
+                 <span className="text-zinc-500 tabular-nums">{sensitivity.toFixed(2)}</span>
+               </button>
+
+               <button
+                 data-no-drag
+                 className="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-white/5 text-[11px] font-bold tracking-[0.18em] text-zinc-200"
+                 onClick={() => {
+                   if (sensitivity !== 1.0) {
+                     setSensitivity(1.0);
+                   } else {
+                     triggerResetPulse();
+                   }
+                   closeContextMenu();
+                 }}
+               >
+                 <RefreshCw size={14} className="text-amber-400" />
+                 <span className="flex-1 text-left">重置为 1.00</span>
+               </button>
+
+               <div className="my-1 h-px bg-white/10" />
+
+               <button
+                 data-no-drag
+                 disabled={isProcessing}
+                 className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg text-[11px] font-bold tracking-[0.18em]
+                   ${isProcessing ? 'opacity-50 cursor-not-allowed' : 'hover:bg-white/5'}
+                   text-zinc-200
+                 `}
+                 onClick={() => {
+                   handleMouseToggle();
+                   closeContextMenu();
+                 }}
+               >
+                 <Mouse size={14} className={isMouseActive ? 'text-blue-400' : 'text-zinc-400'} />
+                 <span className="flex-1 text-left">总开关</span>
+                 <span className={`text-zinc-500 ${isMouseActive ? 'text-blue-400' : ''}`}>{isMouseActive ? '开' : '关'}</span>
+               </button>
+
+               <button
+                 data-no-drag
+                 disabled={!isMouseActive}
+                 className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg text-[11px] font-bold tracking-[0.18em]
+                   ${isMouseActive ? 'hover:bg-white/5' : 'opacity-50 cursor-not-allowed'}
+                   text-zinc-200
+                 `}
+                 onClick={() => {
+                   requestCrosshairToggle();
+                   closeContextMenu();
+                 }}
+               >
+                 <Crosshair
+                   size={14}
+                   className={isFiring ? 'text-emerald-400' : isCrosshairActive ? 'text-amber-400' : 'text-zinc-400'}
+                 />
+                 <span className="flex-1 text-left">自动按键</span>
+                 <span className={`text-zinc-500 ${isCrosshairActive ? 'text-amber-400' : ''}`}>{isCrosshairActive ? '开' : '关'}</span>
+               </button>
+
+               <div className="my-1 h-px bg-white/10" />
+
+               <button
+                 data-no-drag
+                 className="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-white/5 text-[11px] font-bold tracking-[0.18em] text-zinc-200"
+                 onClick={() => {
+                   tauriMinimize().catch(() => {});
+                   closeContextMenu();
+                 }}
+               >
+                 <Minus size={14} className="text-zinc-400" />
+                 <span className="flex-1 text-left">最小化</span>
+               </button>
+
+               <button
+                 data-no-drag
+                 className="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-red-500/10 text-[11px] font-bold tracking-[0.18em] text-zinc-200"
+                 onClick={requestClose}
+               >
+                 <X size={14} className="text-red-400" />
+                 <span className="flex-1 text-left">退出</span>
+               </button>
+             </motion.div>
+           )}
+         </AnimatePresence>
+
+         {/* --- [后端注意] 右上角关闭按钮 --- */}
+         {/* 对应 CLI 逻辑：'q' 命令，关闭程序。 */}
+         {/* 重要：需要等待后端恢复灵敏度完成后再关闭窗口（避免关闭后鼠标还“卡”一会）。 */}
         <div 
           className="absolute top-0 right-0 z-[101] flex p-2 gap-1"
           style={{ WebkitAppRegion: 'no-drag' }}
@@ -754,45 +1014,14 @@ export default function App() {
             <Minus size={14} className="text-zinc-600 group-hover:text-zinc-200 transition-colors" />
           </button>
           
-           <button 
-               className={`group p-1.5 rounded transition-colors flex items-center justify-center
-                 ${isClosing ? 'bg-red-500/20 text-red-500' : 'hover:bg-red-500/10'}
-               `}
-               onClick={() => {
-                if (isClosing || closeRequested.current) return;
-                closeRequested.current = true;
- 
-                if (!isTauri) {
-                  window.close?.();
-                  return;
-                }
-
-                tauriInvoke('ui_save_state', { state: { crosshairMemory: crosshairMemory.current } }).catch(() => {});
-
-                let finished = false;
-                const timeoutId = window.setTimeout(() => {
-                  if (finished) return;
-                  finished = true;
-                  pendingExit.current = null;
-                  tauriClose().catch(() => {});
-                }, 8000);
-
-                pendingExit.current = () => {
-                  if (finished) return;
-                  finished = true;
-                  window.clearTimeout(timeoutId);
-                 tauriClose().catch(() => {});
-                };
- 
-                tauriInvoke('backend_quit').catch(() => {
-                  const done = pendingExit.current;
-                  pendingExit.current = null;
-                  if (typeof done === 'function') done();
-                });
-               }}
-           >
-             {isClosing ? (
-             <span className="flex items-center justify-center w-[14px] h-[14px]">
+            <button 
+                className={`group p-1.5 rounded transition-colors flex items-center justify-center
+                  ${isClosing ? 'bg-red-500/20 text-red-500' : 'hover:bg-red-500/10'}
+                `}
+                onClick={requestClose}
+            >
+              {isClosing ? (
+              <span className="flex items-center justify-center w-[14px] h-[14px]">
                 <Loader2 className="animate-spin w-full h-full block" />
               </span>
              ) : (
@@ -979,21 +1208,22 @@ export default function App() {
                       data-no-drag
                       className={`group relative flex flex-col items-center gap-2 transition-all duration-300 
                         ${isProcessing ? 'cursor-wait' : 'cursor-pointer'}
-                        ${mouseStatus === 'OFF' ? 'opacity-50' : 'opacity-100'}
+                        ${mouseStatus === 'OFF' && !shutdownPulse ? 'opacity-50' : 'opacity-100'}
                         ${isMouseActive ? 'scale-110' : ''}
                       `}
                       onMouseDown={(e) => e.nativeEvent.stopImmediatePropagation()} 
                       onClick={handleMouseToggle}
                     >
                       <div className={`relative z-10 p-4 rounded-full border backdrop-blur-md transition-all duration-500
-                        ${isMouseActive 
+                        ${(isMouseActive || mouseStatus === 'BOOTING')
                           ? 'bg-white/10 border-white/35' 
-                          : mouseStatus === 'SHUTTING_DOWN' ? 'bg-red-500/10 border-red-500/30' : 'bg-white/5 border-white/10 hover:bg-white/10'}
+                          : mouseStatus === 'SHUTTING_DOWN' ? 'bg-white/5 border-white/10' : 'bg-white/5 border-white/10 hover:bg-white/10'}
                       `}>
                         <Mouse size={24} className={`transition-all duration-300 
-                          ${isMouseActive ? 'text-blue-400' : 'text-white/20'}
-                          ${mouseStatus === 'BOOTING' ? 'animate-pulse text-blue-300' : ''}
-                          ${mouseStatus === 'SHUTTING_DOWN' ? 'text-red-400 opacity-50' : ''}
+                          ${(shutdownPulse || mouseStatus === 'SHUTTING_DOWN')
+                            ? 'text-red-400/50'
+                            : (isMouseActive || mouseStatus === 'BOOTING') ? 'text-blue-400' : 'text-white/20'}
+                          ${mouseStatus === 'BOOTING' ? 'animate-pulse' : ''}
                         `} />
                       </div>
                     </div>
@@ -1009,16 +1239,7 @@ export default function App() {
                         ${isMouseActive ? 'cursor-pointer' : 'cursor-not-allowed opacity-20'} 
                       `}
                       onMouseDown={(e) => e.nativeEvent.stopImmediatePropagation()}
-                      onClick={() => {
-                         if (!isMouseActive) return;
-                         const next = !isCrosshairActive;
-                         crosshairMemory.current = next;
-                         tauriInvoke('ui_save_state', { state: { crosshairMemory: next } }).catch(() => {});
-                         isCrosshairActiveRef.current = next;
-                         setIsCrosshairActive(next);
-                         setIsFiring(false);
-                         tauriInvoke('backend_set_feature', { enabled: next }).catch(() => {});
-                      }}
+                      onClick={requestCrosshairToggle}
                     >
                       <div className={`relative z-10 p-4 rounded-full border backdrop-blur-md transition-all duration-500
                         ${(isFiring || isCrosshairActive) 
