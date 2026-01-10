@@ -408,36 +408,49 @@ fn sample_window_brightness(hwnd: HWND, sampler: &mut AmbientSampler) -> Option<
     bottom: v_top + v_height,
   };
 
-  let center_x = window.left + window.width() / 2;
-  let center_y = window.top + window.height() / 2;
   let half = AMBIENT_SAMPLE_SOURCE / 2;
-
-  let candidates = [
-    RectI32 {
-      left: center_x - half,
-      top: window.top - AMBIENT_SAMPLE_MARGIN - AMBIENT_SAMPLE_SOURCE,
-      right: center_x + half,
-      bottom: window.top - AMBIENT_SAMPLE_MARGIN,
-    },
-    RectI32 {
-      left: center_x - half,
-      top: window.bottom + AMBIENT_SAMPLE_MARGIN,
-      right: center_x + half,
-      bottom: window.bottom + AMBIENT_SAMPLE_MARGIN + AMBIENT_SAMPLE_SOURCE,
-    },
-    RectI32 {
-      left: window.left - AMBIENT_SAMPLE_MARGIN - AMBIENT_SAMPLE_SOURCE,
-      top: center_y - half,
-      right: window.left - AMBIENT_SAMPLE_MARGIN,
-      bottom: center_y + half,
-    },
-    RectI32 {
-      left: window.right + AMBIENT_SAMPLE_MARGIN,
-      top: center_y - half,
-      right: window.right + AMBIENT_SAMPLE_MARGIN + AMBIENT_SAMPLE_SOURCE,
-      bottom: center_y + half,
-    },
+  let quarter_w = window.width() / 4;
+  let quarter_h = window.height() / 4;
+  let x_points = [
+    window.left + quarter_w,
+    window.left + window.width() / 2,
+    window.right - quarter_w,
   ];
+  let y_points = [
+    window.top + quarter_h,
+    window.top + window.height() / 2,
+    window.bottom - quarter_h,
+  ];
+
+  let mut candidates = Vec::with_capacity(12);
+  for x in x_points {
+    candidates.push(RectI32 {
+      left: x - half,
+      top: window.top - AMBIENT_SAMPLE_MARGIN - AMBIENT_SAMPLE_SOURCE,
+      right: x + half,
+      bottom: window.top - AMBIENT_SAMPLE_MARGIN,
+    });
+    candidates.push(RectI32 {
+      left: x - half,
+      top: window.bottom + AMBIENT_SAMPLE_MARGIN,
+      right: x + half,
+      bottom: window.bottom + AMBIENT_SAMPLE_MARGIN + AMBIENT_SAMPLE_SOURCE,
+    });
+  }
+  for y in y_points {
+    candidates.push(RectI32 {
+      left: window.left - AMBIENT_SAMPLE_MARGIN - AMBIENT_SAMPLE_SOURCE,
+      top: y - half,
+      right: window.left - AMBIENT_SAMPLE_MARGIN,
+      bottom: y + half,
+    });
+    candidates.push(RectI32 {
+      left: window.right + AMBIENT_SAMPLE_MARGIN,
+      top: y - half,
+      right: window.right + AMBIENT_SAMPLE_MARGIN + AMBIENT_SAMPLE_SOURCE,
+      bottom: y + half,
+    });
+  }
 
   let mut sum = 0.0f32;
   let mut count = 0u32;

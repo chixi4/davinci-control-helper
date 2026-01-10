@@ -42,6 +42,14 @@ async function tauriStartDragging() {
 
 const WINDOW_WIDTH = 320;
 const WINDOW_HEIGHT = 460;
+const AMBIENT_RANGE_MIN = 0.05;
+const AMBIENT_RANGE_MAX = 0.2;
+const AMBIENT_LERP = 0.06;
+const GLASS_TOP_DARK = 0.20;
+const GLASS_TOP_LIGHT = 0.30;
+const GLASS_BOTTOM_DARK = 0.40;
+const GLASS_BOTTOM_LIGHT = 0.90;
+const GLASS_VIGNETTE_ALPHA = 0.25;
 
 // --- [后端注意] 报错与状态模拟数据 ---
 // 这是一个轮播的演示列表，用于展示灵敏度为1.0时的界面状态反馈。
@@ -134,7 +142,6 @@ export default function App() {
   
   const [notifications, setNotifications] = useState([]);
   const [fullScreenStatus, setFullScreenStatus] = useState(null);
-  const [ambientBrightness, setAmbientBrightness] = useState(1.0);
   
   // 退出状态：用于处理点击关闭按钮后的延迟逻辑
   const [isClosing, setIsClosing] = useState(false);
@@ -166,6 +173,9 @@ export default function App() {
   const isCrosshairActiveRef = useRef(false);
   const mouseStatusRef = useRef('OFF');
   const phaseRef = useRef(phase);
+  const ambientTarget = useRef(1.0);
+  const ambientSmooth = useRef(1.0);
+  const ambientRaf = useRef(0);
   
   // 记忆功能：用于在重新开启鼠标开关时，恢复上次的瞄准镜状态
   const crosshairMemory = useRef(false);
@@ -183,6 +193,33 @@ export default function App() {
     setTimeout(() => {
       setNotifications(prev => prev.filter(n => n.id !== id));
     }, 3000);
+  };
+
+  const applyAmbientStyle = (value) => {
+    const range = AMBIENT_RANGE_MAX - AMBIENT_RANGE_MIN;
+    const t = range <= 0 ? 1 : Math.max(0, Math.min(1, (value - AMBIENT_RANGE_MIN) / range));
+    const top = GLASS_TOP_DARK + (GLASS_TOP_LIGHT - GLASS_TOP_DARK) * t;
+    const bottom = GLASS_BOTTOM_DARK + (GLASS_BOTTOM_LIGHT - GLASS_BOTTOM_DARK) * t;
+    const el = containerRef.current;
+    if (!el) return;
+    el.style.setProperty('--glass-top-alpha', top.toFixed(3));
+    el.style.setProperty('--glass-bottom-alpha', bottom.toFixed(3));
+    el.style.setProperty('--glass-vignette-alpha', GLASS_VIGNETTE_ALPHA.toFixed(3));
+  };
+
+  const stepAmbient = () => {
+    const target = ambientTarget.current;
+    const current = ambientSmooth.current;
+    const next = current + (target - current) * AMBIENT_LERP;
+    ambientSmooth.current = next;
+    applyAmbientStyle(next);
+    if (Math.abs(target - next) > 0.0005) {
+      ambientRaf.current = requestAnimationFrame(stepAmbient);
+      return;
+    }
+    ambientSmooth.current = target;
+    applyAmbientStyle(target);
+    ambientRaf.current = 0;
   };
 
   const closeContextMenu = () => setContextMenu(null);
@@ -427,6 +464,10 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    applyAmbientStyle(ambientSmooth.current);
+  }, []);
+
+  useEffect(() => {
     if (!isTauri) return;
 
     let unlisten = null;
@@ -437,13 +478,20 @@ export default function App() {
           const raw = event?.payload;
           const value = typeof raw === 'number' ? raw : Number.parseFloat(raw);
           if (!Number.isFinite(value)) return;
-          setAmbientBrightness(Math.max(0, Math.min(1, value)));
+          ambientTarget.current = Math.max(0, Math.min(1, value));
+          if (!ambientRaf.current) {
+            ambientRaf.current = requestAnimationFrame(stepAmbient);
+          }
         });
       } catch {}
     })();
 
     return () => {
       if (unlisten) unlisten();
+      if (ambientRaf.current) {
+        cancelAnimationFrame(ambientRaf.current);
+        ambientRaf.current = 0;
+      }
     };
   }, []);
 
@@ -711,11 +759,6 @@ export default function App() {
 
   const isMouseActive = mouseStatus === 'ON'; 
   const isProcessing = mouseStatus === 'BOOTING' || mouseStatus === 'SHUTTING_DOWN';
-  const ambient = Math.max(0, Math.min(1, ambientBrightness));
-  const ambientT = Math.max(0, Math.min(1, (ambient - 0.05) / 0.15));
-  const glassTopAlpha = 0.20 + (0.30 - 0.20) * ambientT;
-  const glassBottomAlpha = 0.40 + (0.90 - 0.40) * ambientT;
-  const glassVignetteAlpha = 0.25;
 
   return (
     <div
@@ -733,6 +776,9 @@ export default function App() {
            style={{
              width: WINDOW_WIDTH,
              height: WINDOW_HEIGHT,
+             '--glass-top-alpha': GLASS_TOP_LIGHT.toFixed(2),
+             '--glass-bottom-alpha': GLASS_BOTTOM_LIGHT.toFixed(2),
+             '--glass-vignette-alpha': GLASS_VIGNETTE_ALPHA.toFixed(2),
            }}
               className={`relative overflow-hidden bg-zinc-950/10 text-zinc-200 font-mono select-none transition-all duration-300 shadow-2xl rounded-xl border border-white/10
               ${isFiring ? 'cursor-crosshair' : 'cursor-default'}
@@ -824,12 +870,13 @@ export default function App() {
             <div
               className="absolute inset-0"
               style={{
-                backgroundImage: `linear-gradient(180deg, rgba(0,0,0,${glassTopAlpha.toFixed(3)}) 0%, rgba(0,0,0,${glassBottomAlpha.toFixed(3)}) 100%)`,
+                backgroundImage:
+                  'linear-gradient(180deg, rgba(0,0,0,var(--glass-top-alpha)) 0%, rgba(0,0,0,var(--glass-bottom-alpha)) 100%)',
               }}
             />
             <div
               className="absolute inset-0 rounded-xl pointer-events-none"
-              style={{ boxShadow: `inset 0 0 96px rgba(0,0,0,${glassVignetteAlpha.toFixed(3)})` }}
+              style={{ boxShadow: 'inset 0 0 96px rgba(0,0,0,var(--glass-vignette-alpha))' }}
             />
           </div>
 
