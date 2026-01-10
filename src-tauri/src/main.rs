@@ -12,6 +12,9 @@ use std::{
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 
+#[cfg(target_os = "windows")]
+use std::ffi::c_void;
+
 use tauri::{Manager, State};
 
 #[cfg(target_os = "windows")]
@@ -19,7 +22,8 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::{
-  Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE},
+  Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE, HWND},
+  System::LibraryLoader::{GetModuleHandleW, GetProcAddress},
   System::Threading::{CreateMutexW, ReleaseMutex},
   UI::WindowsAndMessaging::{FindWindowW, SetForegroundWindow, ShowWindow, SW_RESTORE},
 };
@@ -82,6 +86,77 @@ fn ensure_single_instance() -> Result<SingleInstanceGuard, ()> {
     }
 
     Ok(SingleInstanceGuard { handle })
+  }
+}
+
+#[cfg(target_os = "windows")]
+const ACCENT_ENABLE_ACRYLICBLURBEHIND: i32 = 4;
+
+#[cfg(target_os = "windows")]
+const WCA_ACCENT_POLICY: u32 = 19;
+
+#[cfg(target_os = "windows")]
+#[repr(C)]
+struct AccentPolicy {
+  accent_state: i32,
+  accent_flags: u32,
+  gradient_color: u32,
+  animation_id: u32,
+}
+
+#[cfg(target_os = "windows")]
+#[repr(C)]
+struct WindowCompositionAttribData {
+  attrib: u32,
+  data: *mut c_void,
+  size: usize,
+}
+
+#[cfg(target_os = "windows")]
+type SetWindowCompositionAttributeFn =
+  unsafe extern "system" fn(HWND, *mut WindowCompositionAttribData) -> i32;
+
+#[cfg(target_os = "windows")]
+fn to_abgr(a: u8, r: u8, g: u8, b: u8) -> u32 {
+  ((a as u32) << 24) | ((b as u32) << 16) | ((g as u32) << 8) | (r as u32)
+}
+
+#[cfg(target_os = "windows")]
+fn apply_window_acrylic(window: &tauri::Window) {
+  let hwnd = match window.hwnd() {
+    Ok(hwnd) => hwnd.0 as isize,
+    Err(_) => return,
+  };
+
+  let user32_name = to_wide_null_terminated("user32.dll");
+  let user32 = unsafe { GetModuleHandleW(user32_name.as_ptr()) };
+  if user32.is_null() {
+    return;
+  }
+
+  let proc = unsafe { GetProcAddress(user32, b"SetWindowCompositionAttribute\0".as_ptr()) };
+  let Some(proc) = proc else {
+    return;
+  };
+
+  let set_window_composition_attribute: SetWindowCompositionAttributeFn =
+    unsafe { std::mem::transmute(proc) };
+
+  let mut accent = AccentPolicy {
+    accent_state: ACCENT_ENABLE_ACRYLICBLURBEHIND,
+    accent_flags: 0,
+    gradient_color: to_abgr(50, 12, 12, 12),
+    animation_id: 0,
+  };
+
+  let mut data = WindowCompositionAttribData {
+    attrib: WCA_ACCENT_POLICY,
+    data: &mut accent as *mut _ as *mut c_void,
+    size: std::mem::size_of::<AccentPolicy>(),
+  };
+
+  unsafe {
+    let _ = set_window_composition_attribute(hwnd as HWND, &mut data);
   }
 }
 
@@ -453,6 +528,12 @@ fn main() {
     .setup(|app| {
       let state = app.state::<SharedBackendState>().inner().clone();
       let _ = spawn_monitor(app.handle(), state);
+      #[cfg(target_os = "windows")]
+      {
+        if let Some(window) = app.get_window("main") {
+          apply_window_acrylic(&window);
+        }
+      }
       Ok(())
     })
     .on_window_event(|event| {

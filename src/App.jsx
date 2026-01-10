@@ -704,7 +704,7 @@ export default function App() {
         <div
            ref={containerRef}
            style={{ width: WINDOW_WIDTH, height: WINDOW_HEIGHT }}
-            className={`relative overflow-hidden bg-zinc-950 text-zinc-200 font-mono select-none transition-all duration-300 shadow-2xl rounded-xl border border-white/10
+             className={`relative overflow-hidden bg-zinc-950/20 text-zinc-200 font-mono select-none transition-all duration-300 shadow-2xl rounded-xl border border-white/10
               ${isFiring ? 'cursor-crosshair' : 'cursor-default'}
             `}
             onMouseDown={(e) => {
@@ -796,18 +796,6 @@ export default function App() {
              style={{
                backgroundImage:
                  'radial-gradient(900px circle at 18% 10%, rgba(255,255,255,0.10), transparent 42%), radial-gradient(800px circle at 82% 88%, rgba(255,255,255,0.06), transparent 46%), radial-gradient(520px circle at 18% 86%, rgba(59,130,246,0.10), transparent 58%), radial-gradient(520px circle at 86% 72%, rgba(245,158,11,0.08), transparent 58%), linear-gradient(180deg, rgba(255,255,255,0.04) 0%, rgba(0,0,0,0.18) 45%, rgba(0,0,0,0.55) 100%)',
-             }}
-           />
-           <div
-             className="absolute inset-0 opacity-[0.28]"
-             style={{
-               backgroundImage:
-                 'linear-gradient(to right, rgba(255,255,255,0.06) 1px, transparent 1px), linear-gradient(to bottom, rgba(255,255,255,0.06) 1px, transparent 1px)',
-               backgroundSize: '22px 22px',
-               maskImage:
-                 'radial-gradient(ellipse at center, rgba(0,0,0,1) 32%, rgba(0,0,0,0) 78%)',
-               WebkitMaskImage:
-                 'radial-gradient(ellipse at center, rgba(0,0,0,1) 32%, rgba(0,0,0,0) 78%)',
              }}
            />
            <div
