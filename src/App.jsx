@@ -848,7 +848,7 @@ export default function App() {
              '--glass-bottom-alpha': GLASS_BOTTOM_SEG4.toFixed(2),
              '--glass-vignette-alpha': GLASS_VIGNETTE_SEG4.toFixed(2),
            }}
-              className={`relative overflow-hidden bg-zinc-950/10 text-zinc-200 font-mono select-none transition-all duration-300 shadow-2xl rounded-xl border border-white/10
+              className={`relative overflow-hidden bg-zinc-950/10 text-zinc-200 font-mono select-none transition-all duration-300 shadow-2xl rounded-[8px] border border-white/10
               ${isFiring ? 'cursor-crosshair' : 'cursor-default'}
             `}
             onMouseDown={(e) => {
@@ -943,7 +943,7 @@ export default function App() {
               }}
             />
             <div
-              className="absolute inset-0 rounded-xl pointer-events-none"
+              className="absolute inset-0 rounded-[8px] pointer-events-none"
               style={{ boxShadow: 'inset 0 0 96px rgba(0,0,0,var(--glass-vignette-alpha))' }}
             />
           </div>
