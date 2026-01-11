@@ -984,9 +984,6 @@ fn main() {
       {
         if let Some(window) = app.get_window("main") {
           apply_window_acrylic(&window);
-          if let Ok(hwnd) = window.hwnd() {
-            start_ambient_sampler(app.handle(), hwnd.0 as isize);
-          }
           apply_window_rounding(&window);
           if let Ok(hwnd) = window.hwnd() {
             start_ambient_sampler(app.handle(), hwnd.0 as isize);
