@@ -174,19 +174,36 @@ fn apply_window_acrylic(window: &tauri::Window) {
 const AMBIENT_SAMPLE_SIZE: i32 = 32;
 
 #[cfg(target_os = "windows")]
-const AMBIENT_SAMPLE_SOURCE: i32 = 96;
+const AMBIENT_SAMPLE_SOURCE: i32 = 48;
 
 #[cfg(target_os = "windows")]
-const AMBIENT_SAMPLE_MARGIN: i32 = 12;
+const AMBIENT_SAMPLE_RING_MARGINS: [i32; 1] = [4];
+
+#[cfg(target_os = "windows")]
+const AMBIENT_SAMPLE_POINTS_PER_SIDE: i32 = 5;
 
 #[cfg(target_os = "windows")]
 const AMBIENT_SAMPLE_INTERVAL_MS: u64 = 100;
 
 #[cfg(target_os = "windows")]
+const AMBIENT_EMIT_EPSILON: f32 = 0.005;
+
+#[cfg(target_os = "windows")]
+const AMBIENT_DROP_EXTREMES_DEFAULT: bool = true;
+
+#[cfg(target_os = "windows")]
 const AMBIENT_EMA_ALPHA: f32 = 0.12;
 
 #[cfg(target_os = "windows")]
-const AMBIENT_EMIT_EPSILON: f32 = 0.005;
+const AMBIENT_EMA_ENABLED_DEFAULT: bool = true;
+
+#[cfg(target_os = "windows")]
+static AMBIENT_DROP_EXTREMES_ENABLED: std::sync::atomic::AtomicBool =
+  std::sync::atomic::AtomicBool::new(AMBIENT_DROP_EXTREMES_DEFAULT);
+
+#[cfg(target_os = "windows")]
+static AMBIENT_EMA_ENABLED: std::sync::atomic::AtomicBool =
+  std::sync::atomic::AtomicBool::new(AMBIENT_EMA_ENABLED_DEFAULT);
 
 #[cfg(target_os = "windows")]
 #[derive(Copy, Clone)]
@@ -376,7 +393,17 @@ impl Drop for AmbientSampler {
 }
 
 #[cfg(target_os = "windows")]
-fn sample_window_brightness(hwnd: HWND, sampler: &mut AmbientSampler) -> Option<f32> {
+struct AmbientSample {
+  average: f32,
+  samples: Vec<Option<f32>>,
+}
+
+#[cfg(target_os = "windows")]
+fn sample_window_brightness(
+  hwnd: HWND,
+  sampler: &mut AmbientSampler,
+  drop_extremes: bool,
+) -> Option<AmbientSample> {
   let mut rect = RECT {
     left: 0,
     top: 0,
@@ -410,70 +437,97 @@ fn sample_window_brightness(hwnd: HWND, sampler: &mut AmbientSampler) -> Option<
   };
 
   let half = AMBIENT_SAMPLE_SOURCE / 2;
-  let quarter_w = window.width() / 4;
-  let quarter_h = window.height() / 4;
-  let x_points = [
-    window.left + quarter_w,
-    window.left + window.width() / 2,
-    window.right - quarter_w,
-  ];
-  let y_points = [
-    window.top + quarter_h,
-    window.top + window.height() / 2,
-    window.bottom - quarter_h,
-  ];
-
-  let mut candidates = Vec::with_capacity(12);
-  for x in x_points {
-    candidates.push(RectI32 {
-      left: x - half,
-      top: window.top - AMBIENT_SAMPLE_MARGIN - AMBIENT_SAMPLE_SOURCE,
-      right: x + half,
-      bottom: window.top - AMBIENT_SAMPLE_MARGIN,
-    });
-    candidates.push(RectI32 {
-      left: x - half,
-      top: window.bottom + AMBIENT_SAMPLE_MARGIN,
-      right: x + half,
-      bottom: window.bottom + AMBIENT_SAMPLE_MARGIN + AMBIENT_SAMPLE_SOURCE,
-    });
-  }
-  for y in y_points {
-    candidates.push(RectI32 {
-      left: window.left - AMBIENT_SAMPLE_MARGIN - AMBIENT_SAMPLE_SOURCE,
-      top: y - half,
-      right: window.left - AMBIENT_SAMPLE_MARGIN,
-      bottom: y + half,
-    });
-    candidates.push(RectI32 {
-      left: window.right + AMBIENT_SAMPLE_MARGIN,
-      top: y - half,
-      right: window.right + AMBIENT_SAMPLE_MARGIN + AMBIENT_SAMPLE_SOURCE,
-      bottom: y + half,
-    });
+  let count = AMBIENT_SAMPLE_POINTS_PER_SIDE.max(1);
+  let mut x_points = Vec::with_capacity(count as usize);
+  let mut y_points = Vec::with_capacity(count as usize);
+  for i in 0..count {
+    let fraction = (i as f32 + 1.0) / (count as f32 + 1.0);
+    let x = window.left + (window.width() as f32 * fraction).round() as i32;
+    let y = window.top + (window.height() as f32 * fraction).round() as i32;
+    x_points.push(x);
+    y_points.push(y);
   }
 
-  let mut sum = 0.0f32;
-  let mut count = 0u32;
+  let points_total = (x_points.len() + y_points.len()) * 2 * AMBIENT_SAMPLE_RING_MARGINS.len();
+  let mut candidates = Vec::with_capacity(points_total);
+  for margin in AMBIENT_SAMPLE_RING_MARGINS {
+    for x in &x_points {
+      candidates.push(RectI32 {
+        left: x - half,
+        top: window.top - margin - AMBIENT_SAMPLE_SOURCE,
+        right: x + half,
+        bottom: window.top - margin,
+      });
+      candidates.push(RectI32 {
+        left: x - half,
+        top: window.bottom + margin,
+        right: x + half,
+        bottom: window.bottom + margin + AMBIENT_SAMPLE_SOURCE,
+      });
+    }
+    for y in &y_points {
+      candidates.push(RectI32 {
+        left: window.left - margin - AMBIENT_SAMPLE_SOURCE,
+        top: y - half,
+        right: window.left - margin,
+        bottom: y + half,
+      });
+      candidates.push(RectI32 {
+        left: window.right + margin,
+        top: y - half,
+        right: window.right + margin + AMBIENT_SAMPLE_SOURCE,
+        bottom: y + half,
+      });
+    }
+  }
+
+  let mut values = Vec::with_capacity(points_total);
+  let mut samples = Vec::with_capacity(points_total);
   for rect in candidates {
     let Some(clamped) = clamp_rect(rect, bounds) else {
+      samples.push(None);
       continue;
     };
     if clamped.intersects(&window) {
+      samples.push(None);
       continue;
     }
     let Some(value) = (unsafe { sampler.capture_brightness(clamped) }) else {
+      samples.push(None);
       continue;
     };
-    sum += value;
-    count += 1;
+    samples.push(Some(value));
+    values.push(value);
   }
 
-  if count == 0 {
-    None
-  } else {
-    Some(sum / count as f32)
+  if values.is_empty() {
+    return None;
   }
+
+  let average = if !drop_extremes || values.len() < 5 {
+    let sum: f32 = values.iter().sum();
+    sum / values.len() as f32
+  } else {
+    values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let drop = if values.len() >= 15 {
+      5
+    } else if values.len() >= 9 {
+      3
+    } else {
+      1
+    };
+    let start = drop;
+    let end = values.len().saturating_sub(drop);
+    if start >= end {
+      let sum: f32 = values.iter().sum();
+      sum / values.len() as f32
+    } else {
+      let sum: f32 = values[start..end].iter().sum();
+      sum / (end - start) as f32
+    }
+  };
+
+  Some(AmbientSample { average, samples })
 }
 
 #[cfg(target_os = "windows")]
@@ -488,14 +542,26 @@ fn start_ambient_sampler(app: tauri::AppHandle, hwnd: isize) {
     let hwnd = hwnd as HWND;
 
     loop {
-      if let Some(sample) = sample_window_brightness(hwnd, &mut sampler) {
-        smooth += (sample - smooth) * AMBIENT_EMA_ALPHA;
-        smooth = smooth.clamp(0.0, 1.0);
+      let mut samples_payload: Option<Vec<Option<f32>>> = None;
+      let use_drop =
+        AMBIENT_DROP_EXTREMES_ENABLED.load(std::sync::atomic::Ordering::Relaxed);
+      if let Some(sample) = sample_window_brightness(hwnd, &mut sampler, use_drop) {
+        let value = sample.average.clamp(0.0, 1.0);
+        if AMBIENT_EMA_ENABLED.load(std::sync::atomic::Ordering::Relaxed) {
+          smooth += (value - smooth) * AMBIENT_EMA_ALPHA;
+          smooth = smooth.clamp(0.0, 1.0);
+        } else {
+          smooth = value;
+        }
+        samples_payload = Some(sample.samples);
       }
 
       if (smooth - last_emit).abs() >= AMBIENT_EMIT_EPSILON {
         if app.emit_all("ambient-brightness", smooth).is_err() {
           break;
+        }
+        if let Some(payload) = samples_payload.take() {
+          let _ = app.emit_all("ambient-samples", payload);
         }
         last_emit = smooth;
       }
@@ -884,6 +950,24 @@ fn backend_quit(backend: State<'_, SharedBackendState>) -> Result<(), String> {
   send_cmd(backend.inner(), "QUIT")
 }
 
+#[tauri::command]
+fn backend_set_drop_extremes(enabled: bool) -> Result<(), String> {
+  #[cfg(target_os = "windows")]
+  {
+    AMBIENT_DROP_EXTREMES_ENABLED.store(enabled, std::sync::atomic::Ordering::Relaxed);
+  }
+  Ok(())
+}
+
+#[tauri::command]
+fn backend_set_ema_enabled(enabled: bool) -> Result<(), String> {
+  #[cfg(target_os = "windows")]
+  {
+    AMBIENT_EMA_ENABLED.store(enabled, std::sync::atomic::Ordering::Relaxed);
+  }
+  Ok(())
+}
+
 fn main() {
   #[cfg(target_os = "windows")]
   let _single_instance_guard = match ensure_single_instance() {
@@ -925,7 +1009,9 @@ fn main() {
       backend_set_feature,
       backend_set_sensitivity,
       backend_full_reset,
-      backend_quit
+      backend_quit,
+      backend_set_drop_extremes,
+      backend_set_ema_enabled
     ])
     .run(tauri::generate_context!())
     .expect("error while running tauri application");

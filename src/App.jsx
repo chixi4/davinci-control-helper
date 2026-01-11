@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Mouse, Crosshair, RefreshCw, Minus, X, Loader2, AlertCircle, CheckCircle } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
@@ -42,10 +42,10 @@ async function tauriStartDragging() {
 
 const WINDOW_WIDTH = 320;
 const WINDOW_HEIGHT = 460;
-const AMBIENT_SEG1_START = 0.05;
-const AMBIENT_SEG1_END = 0.1;
-const AMBIENT_SEG2_END = 0.2;
-const AMBIENT_SEG3_END = 0.6;
+const AMBIENT_SEG1_START = 0.08;
+const AMBIENT_SEG1_END = 0.20;
+const AMBIENT_SEG2_END = 0.30;
+const AMBIENT_SEG3_END = 0.60;
 const AMBIENT_LERP = 0.12;
 const GLASS_TOP_SEG1 = 0.0225;
 const GLASS_BOTTOM_SEG1 = 0.045;
@@ -59,6 +59,114 @@ const GLASS_VIGNETTE_SEG1 = 0.80;
 const GLASS_VIGNETTE_SEG2 = 0.76;
 const GLASS_VIGNETTE_SEG3 = 0.66;
 const GLASS_VIGNETTE_SEG4 = 0.55;
+const DEFAULT_AMBIENT_CONFIG = {
+  seg1: { top: GLASS_TOP_SEG1, bottom: GLASS_BOTTOM_SEG1, vignette: GLASS_VIGNETTE_SEG1 },
+  seg2: { top: GLASS_TOP_SEG2, bottom: GLASS_BOTTOM_SEG2, vignette: GLASS_VIGNETTE_SEG2 },
+  seg3: { top: GLASS_TOP_SEG3, bottom: GLASS_BOTTOM_SEG3, vignette: GLASS_VIGNETTE_SEG3 },
+  seg4: { top: GLASS_TOP_SEG4, bottom: GLASS_BOTTOM_SEG4, vignette: GLASS_VIGNETTE_SEG4 },
+};
+const AMBIENT_SAMPLE_RING_OFFSETS = [4];
+const AMBIENT_SAMPLE_POINTS_PER_SIDE = 5;
+const AMBIENT_SAMPLE_FRACTIONS = Array.from(
+  { length: AMBIENT_SAMPLE_POINTS_PER_SIDE },
+  (_, index) => (index + 1) / (AMBIENT_SAMPLE_POINTS_PER_SIDE + 1)
+);
+const AMBIENT_SAMPLE_MARKERS = {
+  x: AMBIENT_SAMPLE_FRACTIONS,
+  y: AMBIENT_SAMPLE_FRACTIONS,
+  rings: AMBIENT_SAMPLE_RING_OFFSETS,
+};
+const AMBIENT_SAMPLE_SOURCE = 48;
+const AMBIENT_SAMPLE_POINTS_PER_RING = AMBIENT_SAMPLE_POINTS_PER_SIDE * 4;
+const AMBIENT_SAMPLE_TOTAL = AMBIENT_SAMPLE_RING_OFFSETS.length * AMBIENT_SAMPLE_POINTS_PER_RING;
+const AMBIENT_SAMPLE_OUTER_MARGIN = Math.max(...AMBIENT_SAMPLE_RING_OFFSETS) + AMBIENT_SAMPLE_SOURCE;
+const AMBIENT_SAMPLE_MAP_SCALE = 0.2;
+const AMBIENT_SAMPLE_MAP_WIDTH = WINDOW_WIDTH + AMBIENT_SAMPLE_OUTER_MARGIN * 2;
+const AMBIENT_SAMPLE_MAP_HEIGHT = WINDOW_HEIGHT + AMBIENT_SAMPLE_OUTER_MARGIN * 2;
+const AMBIENT_LOG_FLUSH_INTERVAL = 250;
+const AMBIENT_LOG_BUFFER_LIMIT = 240;
+
+const clamp01 = (value) => Math.min(1, Math.max(0, value));
+const formatSampleValue = (value) =>
+  typeof value === 'number' && Number.isFinite(value) ? value.toFixed(2) : '--';
+const getSampleIndex = (ringIndex, side, pointIndex) => {
+  const base = ringIndex * AMBIENT_SAMPLE_POINTS_PER_RING;
+  const offset = AMBIENT_SAMPLE_POINTS_PER_SIDE * 2;
+  if (side === 'top') return base + pointIndex * 2;
+  if (side === 'bottom') return base + pointIndex * 2 + 1;
+  if (side === 'left') return base + offset + pointIndex * 2;
+  return base + offset + pointIndex * 2 + 1;
+};
+const AMBIENT_CONFIG_STORAGE_KEY = 'rawaccel-ambient-config-v1';
+const AMBIENT_SETTINGS_STORAGE_KEY = 'rawaccel-ambient-settings-v1';
+const DEFAULT_AMBIENT_SETTINGS = {
+  config: DEFAULT_AMBIENT_CONFIG,
+  dropExtremesEnabled: true,
+  emaEnabled: true,
+};
+
+const sanitizeAmbientSegment = (segment, fallback) => {
+  const next = segment || {};
+  const top = Number.isFinite(next.top) ? next.top : fallback.top;
+  const bottom = Number.isFinite(next.bottom) ? next.bottom : fallback.bottom;
+  const vignette = Number.isFinite(next.vignette) ? next.vignette : fallback.vignette;
+  return {
+    top: clamp01(top),
+    bottom: clamp01(bottom),
+    vignette: clamp01(vignette),
+  };
+};
+
+const sanitizeAmbientConfig = (config) => {
+  if (!config || typeof config !== 'object') return DEFAULT_AMBIENT_CONFIG;
+  return {
+    seg1: sanitizeAmbientSegment(config.seg1, DEFAULT_AMBIENT_CONFIG.seg1),
+    seg2: sanitizeAmbientSegment(config.seg2, DEFAULT_AMBIENT_CONFIG.seg2),
+    seg3: sanitizeAmbientSegment(config.seg3, DEFAULT_AMBIENT_CONFIG.seg3),
+    seg4: sanitizeAmbientSegment(config.seg4, DEFAULT_AMBIENT_CONFIG.seg4),
+  };
+};
+
+const loadAmbientConfig = () => {
+  if (typeof window === 'undefined') return DEFAULT_AMBIENT_CONFIG;
+  try {
+    const raw = window.localStorage.getItem(AMBIENT_CONFIG_STORAGE_KEY);
+    if (!raw) return DEFAULT_AMBIENT_CONFIG;
+    const parsed = JSON.parse(raw);
+    return sanitizeAmbientConfig(parsed);
+  } catch {
+    return DEFAULT_AMBIENT_CONFIG;
+  }
+};
+
+const loadAmbientSettings = () => {
+  if (typeof window === 'undefined') return DEFAULT_AMBIENT_SETTINGS;
+  try {
+    const raw = window.localStorage.getItem(AMBIENT_SETTINGS_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object') {
+        return {
+          config: sanitizeAmbientConfig(parsed.config ?? parsed),
+          dropExtremesEnabled:
+            typeof parsed.dropExtremesEnabled === 'boolean'
+              ? parsed.dropExtremesEnabled
+              : DEFAULT_AMBIENT_SETTINGS.dropExtremesEnabled,
+          emaEnabled:
+            typeof parsed.emaEnabled === 'boolean'
+              ? parsed.emaEnabled
+              : DEFAULT_AMBIENT_SETTINGS.emaEnabled,
+        };
+      }
+    }
+  } catch {}
+
+  return {
+    config: loadAmbientConfig(),
+    dropExtremesEnabled: DEFAULT_AMBIENT_SETTINGS.dropExtremesEnabled,
+    emaEnabled: DEFAULT_AMBIENT_SETTINGS.emaEnabled,
+  };
+};
 
 // --- [后端注意] 报错与状态模拟数据 ---
 // 这是一个轮播的演示列表，用于展示灵敏度为1.0时的界面状态反馈。
@@ -182,11 +290,44 @@ export default function App() {
   const isCrosshairActiveRef = useRef(false);
   const mouseStatusRef = useRef('OFF');
   const phaseRef = useRef(phase);
+  const initialAmbientSettings = useMemo(() => loadAmbientSettings(), []);
+  const [ambientConfig, setAmbientConfig] = useState(() => initialAmbientSettings.config);
+  const ambientConfigRef = useRef(ambientConfig);
   const ambientTarget = useRef(1.0);
-  const ambientTop = useRef(GLASS_TOP_SEG4);
-  const ambientBottom = useRef(GLASS_BOTTOM_SEG4);
-  const ambientVignette = useRef(GLASS_VIGNETTE_SEG4);
+  const ambientMeasured = useRef(1.0);
+  const [ambientPreviewEnabled, setAmbientPreviewEnabled] = useState(false);
+  const ambientPreviewEnabledRef = useRef(false);
+  const [ambientPreviewBrightness, setAmbientPreviewBrightness] = useState(0.2);
+  const [ambientTunerOpen, setAmbientTunerOpen] = useState(false);
+  const [showAmbientSamplePoints, setShowAmbientSamplePoints] = useState(false);
+  const [dropExtremesEnabled, setDropExtremesEnabled] = useState(
+    () => initialAmbientSettings.dropExtremesEnabled
+  );
+  const [emaEnabled, setEmaEnabled] = useState(() => initialAmbientSettings.emaEnabled);
+  const [ambientLogging, setAmbientLogging] = useState(false);
+  const ambientLoggingRef = useRef(false);
+  const ambientLogBuffer = useRef([]);
+  const ambientLogFlushTimer = useRef(null);
+  const ambientLogRaf = useRef(0);
+  const ambientLogFsRef = useRef(null);
+  const ambientLogPathRef = useRef('');
+  const ambientLogFlushBusy = useRef(false);
+  const ambientLogError = useRef(false);
+  const ambientSamplesLast = useRef(0);
+  const [ambientSamples, setAmbientSamples] = useState(() => Array(AMBIENT_SAMPLE_TOTAL).fill(null));
+  const ambientSamplesRef = useRef(ambientSamples);
+  const ambientTop = useRef(ambientConfigRef.current.seg4.top);
+  const ambientBottom = useRef(ambientConfigRef.current.seg4.bottom);
+  const ambientVignette = useRef(ambientConfigRef.current.seg4.vignette);
   const ambientRaf = useRef(0);
+  const ambientDebugLast = useRef(0);
+  const [ambientDebug, setAmbientDebug] = useState(() => ({
+    brightness: ambientTarget.current,
+    measured: ambientMeasured.current,
+    top: ambientTop.current,
+    bottom: ambientBottom.current,
+    vignette: ambientVignette.current,
+  }));
   
   // 记忆功能：用于在重新开启鼠标开关时，恢复上次的瞄准镜状态
   const crosshairMemory = useRef(false);
@@ -206,8 +347,251 @@ export default function App() {
     }, 3000);
   };
 
+  const updateAmbientDebug = (force = false) => {
+    const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    if (!force && now - ambientDebugLast.current < 80) return;
+    ambientDebugLast.current = now;
+    setAmbientDebug({
+      brightness: ambientTarget.current,
+      measured: ambientMeasured.current,
+      top: ambientTop.current,
+      bottom: ambientBottom.current,
+      vignette: ambientVignette.current,
+    });
+  };
+
+  const updateAmbientSamples = (samples, force = false) => {
+    if (!Array.isArray(samples)) return;
+    ambientSamplesRef.current = samples;
+    const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    if (!force && now - ambientSamplesLast.current < 80) return;
+    ambientSamplesLast.current = now;
+    setAmbientSamples(samples);
+  };
+
+  const setAmbientConfigValue = (segment, key, raw) => {
+    const next = Number.parseFloat(raw);
+    if (!Number.isFinite(next)) return;
+    setAmbientConfig((prev) => ({
+      ...prev,
+      [segment]: {
+        ...prev[segment],
+        [key]: clamp01(next),
+      },
+    }));
+  };
+
+  const setPreviewBrightnessValue = (value) => {
+    const next = clamp01(value);
+    setAmbientPreviewBrightness(next);
+  };
+
+  useEffect(() => {
+    if (!isTauri) return;
+    tauriInvoke('backend_set_drop_extremes', { enabled: dropExtremesEnabled }).catch(() => {});
+  }, [dropExtremesEnabled]);
+
+  useEffect(() => {
+    if (!isTauri) return;
+    tauriInvoke('backend_set_ema_enabled', { enabled: emaEnabled }).catch(() => {});
+  }, [emaEnabled]);
+
+  const ambientSampleRects = useMemo(() => {
+    const source = AMBIENT_SAMPLE_SOURCE;
+    const xPoints = AMBIENT_SAMPLE_MARKERS.x.map((fraction) => fraction * WINDOW_WIDTH);
+    const yPoints = AMBIENT_SAMPLE_MARKERS.y.map((fraction) => fraction * WINDOW_HEIGHT);
+    const rects = [];
+
+    AMBIENT_SAMPLE_RING_OFFSETS.forEach((margin, ringIndex) => {
+      xPoints.forEach((x, index) => {
+        rects.push({
+          index: getSampleIndex(ringIndex, 'top', index),
+          left: x - source / 2,
+          top: -margin - source,
+          width: source,
+          height: source,
+        });
+        rects.push({
+          index: getSampleIndex(ringIndex, 'bottom', index),
+          left: x - source / 2,
+          top: WINDOW_HEIGHT + margin,
+          width: source,
+          height: source,
+        });
+      });
+      yPoints.forEach((y, index) => {
+        rects.push({
+          index: getSampleIndex(ringIndex, 'left', index),
+          left: -margin - source,
+          top: y - source / 2,
+          width: source,
+          height: source,
+        });
+        rects.push({
+          index: getSampleIndex(ringIndex, 'right', index),
+          left: WINDOW_WIDTH + margin,
+          top: y - source / 2,
+          width: source,
+          height: source,
+        });
+      });
+    });
+
+    return rects;
+  }, []);
+
+  const applyAmbientConfig = () => {
+    if (typeof window === 'undefined') return;
+    try {
+      window.localStorage.setItem(
+        AMBIENT_SETTINGS_STORAGE_KEY,
+        JSON.stringify({
+          config: ambientConfig,
+          dropExtremesEnabled,
+          emaEnabled,
+        })
+      );
+      window.localStorage.setItem(
+        AMBIENT_CONFIG_STORAGE_KEY,
+        JSON.stringify(ambientConfig)
+      );
+    } catch {}
+  };
+
+  const buildAmbientLogPayload = () => ({
+    timestamp: new Date().toISOString(),
+    measured: ambientMeasured.current,
+    target: ambientTarget.current,
+    top: ambientTop.current,
+    bottom: ambientBottom.current,
+    vignette: ambientVignette.current,
+    previewEnabled: ambientPreviewEnabledRef.current,
+    previewBrightness: ambientPreviewBrightness,
+    dropExtremesEnabled,
+    emaEnabled,
+    config: ambientConfigRef.current,
+    samples: ambientSamplesRef.current,
+  });
+
+  const queueAmbientLog = () => {
+    const payload = buildAmbientLogPayload();
+    ambientLogBuffer.current.push(JSON.stringify(payload));
+    if (ambientLogBuffer.current.length >= AMBIENT_LOG_BUFFER_LIMIT) {
+      flushAmbientLogBuffer();
+    }
+  };
+
+  const flushAmbientLogBuffer = async (silent = false) => {
+    if (!isTauri) return;
+    if (ambientLogFlushBusy.current) return;
+    const fs = ambientLogFsRef.current;
+    if (!fs || ambientLogBuffer.current.length === 0) return;
+    ambientLogFlushBusy.current = true;
+    const lines = ambientLogBuffer.current.splice(0, ambientLogBuffer.current.length);
+    try {
+      await fs.writeTextFile(
+        `${fs.logDir}/${fs.logFile}`,
+        `${lines.join('\n')}\n`,
+        { dir: fs.BaseDirectory.AppData, append: true }
+      );
+    } catch (error) {
+      ambientLogBuffer.current.unshift(...lines);
+      if (!silent && !ambientLogError.current) {
+        ambientLogError.current = true;
+        console.error(error);
+        addNotification('error', '日志写入失败');
+      }
+    } finally {
+      ambientLogFlushBusy.current = false;
+    }
+  };
+
+  const startAmbientLogging = async () => {
+    if (!isTauri) {
+      addNotification('error', '日志仅支持桌面应用');
+      return;
+    }
+    if (ambientLoggingRef.current) return;
+    ambientLogError.current = false;
+    ambientLogBuffer.current = [];
+    try {
+      const { writeTextFile, createDir, BaseDirectory } = await import('@tauri-apps/api/fs');
+      const { appDataDir, join } = await import('@tauri-apps/api/path');
+      const logDir = 'ambient-logs';
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const logFile = `ambient-log-${stamp}.jsonl`;
+      await createDir(logDir, { dir: BaseDirectory.AppData, recursive: true });
+      const base = await appDataDir();
+      const fullPath = await join(base, logDir, logFile);
+      ambientLogFsRef.current = { writeTextFile, BaseDirectory, logDir, logFile };
+      ambientLogPathRef.current = fullPath;
+      ambientLoggingRef.current = true;
+      setAmbientLogging(true);
+      queueAmbientLog();
+      if (ambientLogFlushTimer.current) clearInterval(ambientLogFlushTimer.current);
+      ambientLogFlushTimer.current = setInterval(() => {
+        flushAmbientLogBuffer(true);
+      }, AMBIENT_LOG_FLUSH_INTERVAL);
+      const tick = () => {
+        if (!ambientLoggingRef.current) return;
+        queueAmbientLog();
+        ambientLogRaf.current = requestAnimationFrame(tick);
+      };
+      ambientLogRaf.current = requestAnimationFrame(tick);
+      addNotification('success', `开始记录 ${fullPath}`);
+    } catch (error) {
+      console.error(error);
+      ambientLoggingRef.current = false;
+      setAmbientLogging(false);
+      addNotification('error', '日志写入失败');
+    }
+  };
+
+  const stopAmbientLogging = async (silent = false) => {
+    if (!ambientLoggingRef.current) return;
+    ambientLoggingRef.current = false;
+    setAmbientLogging(false);
+    if (ambientLogRaf.current) {
+      cancelAnimationFrame(ambientLogRaf.current);
+      ambientLogRaf.current = 0;
+    }
+    if (ambientLogFlushTimer.current) {
+      clearInterval(ambientLogFlushTimer.current);
+      ambientLogFlushTimer.current = null;
+    }
+    await flushAmbientLogBuffer(true);
+    if (!silent) {
+      const target = ambientLogPathRef.current;
+      addNotification('success', target ? `已停止记录 ${target}` : '已停止记录');
+    }
+  };
+
+  const toggleAmbientLogging = () => {
+    if (ambientLoggingRef.current) {
+      stopAmbientLogging();
+      return;
+    }
+    startAmbientLogging();
+  };
+
+  useEffect(() => {
+    return () => {
+      ambientLoggingRef.current = false;
+      if (ambientLogRaf.current) {
+        cancelAnimationFrame(ambientLogRaf.current);
+        ambientLogRaf.current = 0;
+      }
+      if (ambientLogFlushTimer.current) {
+        clearInterval(ambientLogFlushTimer.current);
+        ambientLogFlushTimer.current = null;
+      }
+      flushAmbientLogBuffer(true);
+    };
+  }, []);
+
   const getAmbientTargets = (value) => {
     const v = Math.max(AMBIENT_SEG1_START, Math.min(AMBIENT_SEG3_END, value));
+    const { seg1, seg2, seg3, seg4 } = ambientConfigRef.current;
     const lerp = (start, end, t) => start + (end - start) * t;
     const blend = (fromTop, fromBottom, fromVignette, toTop, toBottom, toVignette, start, end) => {
       if (end <= start) return { top: toTop, bottom: toBottom, vignette: toVignette };
@@ -221,35 +605,35 @@ export default function App() {
 
     if (v <= AMBIENT_SEG1_END) {
       return blend(
-        GLASS_TOP_SEG1,
-        GLASS_BOTTOM_SEG1,
-        GLASS_VIGNETTE_SEG1,
-        GLASS_TOP_SEG2,
-        GLASS_BOTTOM_SEG2,
-        GLASS_VIGNETTE_SEG2,
+        seg1.top,
+        seg1.bottom,
+        seg1.vignette,
+        seg2.top,
+        seg2.bottom,
+        seg2.vignette,
         AMBIENT_SEG1_START,
         AMBIENT_SEG1_END
       );
     }
     if (v <= AMBIENT_SEG2_END) {
       return blend(
-        GLASS_TOP_SEG2,
-        GLASS_BOTTOM_SEG2,
-        GLASS_VIGNETTE_SEG2,
-        GLASS_TOP_SEG3,
-        GLASS_BOTTOM_SEG3,
-        GLASS_VIGNETTE_SEG3,
+        seg2.top,
+        seg2.bottom,
+        seg2.vignette,
+        seg3.top,
+        seg3.bottom,
+        seg3.vignette,
         AMBIENT_SEG1_END,
         AMBIENT_SEG2_END
       );
     }
     return blend(
-      GLASS_TOP_SEG3,
-      GLASS_BOTTOM_SEG3,
-      GLASS_VIGNETTE_SEG3,
-      GLASS_TOP_SEG4,
-      GLASS_BOTTOM_SEG4,
-      GLASS_VIGNETTE_SEG4,
+      seg3.top,
+      seg3.bottom,
+      seg3.vignette,
+      seg4.top,
+      seg4.bottom,
+      seg4.vignette,
       AMBIENT_SEG2_END,
       AMBIENT_SEG3_END
     );
@@ -275,6 +659,7 @@ export default function App() {
     ambientBottom.current = nextBottom;
     ambientVignette.current = nextVignette;
     applyAmbientStyle(nextTop, nextBottom, nextVignette);
+    updateAmbientDebug();
     if (
       Math.abs(targetTop - nextTop) > 0.0005 ||
       Math.abs(targetBottom - nextBottom) > 0.0005 ||
@@ -287,6 +672,7 @@ export default function App() {
     ambientBottom.current = targetBottom;
     ambientVignette.current = targetVignette;
     applyAmbientStyle(targetTop, targetBottom, targetVignette);
+    updateAmbientDebug(true);
     ambientRaf.current = 0;
   };
 
@@ -536,9 +922,34 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    ambientConfigRef.current = ambientConfig;
+    updateAmbientDebug(true);
+    if (!ambientRaf.current) {
+      ambientRaf.current = requestAnimationFrame(stepAmbient);
+    }
+  }, [ambientConfig]);
+
+  useEffect(() => {
+    ambientPreviewEnabledRef.current = ambientPreviewEnabled;
+  }, [ambientPreviewEnabled]);
+
+  useEffect(() => {
+    if (ambientPreviewEnabled) {
+      ambientTarget.current = clamp01(ambientPreviewBrightness);
+    } else {
+      ambientTarget.current = ambientMeasured.current;
+    }
+    updateAmbientDebug(true);
+    if (!ambientRaf.current) {
+      ambientRaf.current = requestAnimationFrame(stepAmbient);
+    }
+  }, [ambientPreviewEnabled, ambientPreviewBrightness]);
+
+  useEffect(() => {
     if (!isTauri) return;
 
     let unlisten = null;
+    let unlistenSamples = null;
 
     (async () => {
       try {
@@ -546,16 +957,31 @@ export default function App() {
           const raw = event?.payload;
           const value = typeof raw === 'number' ? raw : Number.parseFloat(raw);
           if (!Number.isFinite(value)) return;
-          ambientTarget.current = Math.max(0, Math.min(1, value));
-          if (!ambientRaf.current) {
-            ambientRaf.current = requestAnimationFrame(stepAmbient);
+          ambientMeasured.current = clamp01(value);
+          if (!ambientPreviewEnabledRef.current) {
+            ambientTarget.current = ambientMeasured.current;
+            if (!ambientRaf.current) {
+              ambientRaf.current = requestAnimationFrame(stepAmbient);
+            }
           }
+          updateAmbientDebug(true);
+        });
+        unlistenSamples = await tauriListen('ambient-samples', (event) => {
+          const payload = event?.payload;
+          const samples = Array.isArray(payload) ? payload : payload?.samples;
+          if (!Array.isArray(samples)) return;
+          const next = Array.from({ length: AMBIENT_SAMPLE_TOTAL }, (_, index) => {
+            const value = samples[index];
+            return typeof value === 'number' && Number.isFinite(value) ? clamp01(value) : null;
+          });
+          updateAmbientSamples(next, true);
         });
       } catch {}
     })();
 
     return () => {
       if (unlisten) unlisten();
+      if (unlistenSamples) unlistenSamples();
       if (ambientRaf.current) {
         cancelAnimationFrame(ambientRaf.current);
         ambientRaf.current = 0;
@@ -844,9 +1270,9 @@ export default function App() {
            style={{
              width: WINDOW_WIDTH,
              height: WINDOW_HEIGHT,
-             '--glass-top-alpha': GLASS_TOP_SEG4.toFixed(2),
-             '--glass-bottom-alpha': GLASS_BOTTOM_SEG4.toFixed(2),
-             '--glass-vignette-alpha': GLASS_VIGNETTE_SEG4.toFixed(2),
+             '--glass-top-alpha': ambientConfig.seg4.top.toFixed(2),
+             '--glass-bottom-alpha': ambientConfig.seg4.bottom.toFixed(2),
+             '--glass-vignette-alpha': ambientConfig.seg4.vignette.toFixed(2),
            }}
               className={`relative overflow-hidden bg-zinc-950/10 text-zinc-200 font-mono select-none transition-all duration-300 shadow-2xl rounded-[8px] border border-white/10
               ${isFiring ? 'cursor-crosshair' : 'cursor-default'}
@@ -911,7 +1337,7 @@ export default function App() {
             onMouseLeave={() => {
              dragArmed.current = false;
              dragStart.current = null;
-           }}
+            }}
             onContextMenu={(e) => {
               e.preventDefault();
               e.stopPropagation();
@@ -932,6 +1358,383 @@ export default function App() {
          >
 
          {/* Entire window is draggable; interactive elements opt-out via `button/input/...` or `data-no-drag`. */}
+
+         <div
+            data-no-drag
+            className="absolute top-3 left-3 z-20 pointer-events-auto w-[230px] rounded-md border border-white/10 bg-black/45 px-2 py-1 text-[10px] leading-4 text-zinc-200"
+          >
+            <div className="flex items-center justify-between gap-2">
+              <div className="font-semibold tracking-wide">亮度调参</div>
+              <button
+                type="button"
+                data-no-drag
+                className="rounded px-1 text-[10px] text-zinc-300 hover:text-white"
+                onClick={() => setAmbientTunerOpen((v) => !v)}
+              >
+                {ambientTunerOpen ? '收起' : '展开'}
+              </button>
+            </div>
+            <div className="mt-1 space-y-0.5">
+              <div>实时亮度 {ambientDebug.measured.toFixed(3)}</div>
+              <div>生效亮度 {ambientDebug.brightness.toFixed(3)}</div>
+              <div>渐变 {ambientDebug.top.toFixed(3)} / {ambientDebug.bottom.toFixed(3)}</div>
+              <div>暗角 {ambientDebug.vignette.toFixed(3)}</div>
+            </div>
+            {ambientTunerOpen && (
+              <div className="mt-2 space-y-2">
+                <label className="flex items-center gap-2">
+                  <input
+                    data-no-drag
+                    type="checkbox"
+                    checked={ambientPreviewEnabled}
+                    onChange={(e) => setAmbientPreviewEnabled(e.target.checked)}
+                    className="h-3 w-3 accent-white"
+                  />
+                  <span>预览亮度</span>
+                </label>
+                <label className="flex items-center gap-2">
+                  <input
+                    data-no-drag
+                    type="checkbox"
+                    checked={showAmbientSamplePoints}
+                    onChange={(e) => setShowAmbientSamplePoints(e.target.checked)}
+                    className="h-3 w-3 accent-white"
+                  />
+                  <span>显示采样点</span>
+                </label>
+                <label className="flex items-center gap-2">
+                  <input
+                    data-no-drag
+                    type="checkbox"
+                    checked={dropExtremesEnabled}
+                    onChange={(e) => setDropExtremesEnabled(e.target.checked)}
+                    className="h-3 w-3 accent-white"
+                  />
+                  <span>丢极值</span>
+                </label>
+                <label className="flex items-center gap-2">
+                  <input
+                    data-no-drag
+                    type="checkbox"
+                    checked={emaEnabled}
+                    onChange={(e) => setEmaEnabled(e.target.checked)}
+                    className="h-3 w-3 accent-white"
+                  />
+                  <span>EMA 平滑</span>
+                </label>
+                {showAmbientSamplePoints && (
+                  <div className="rounded border border-white/10 bg-black/30 p-2">
+                    <div className="mb-1 text-[9px] text-zinc-400">采样区域示意</div>
+                    <div
+                      className="relative"
+                      style={{
+                        width: AMBIENT_SAMPLE_MAP_WIDTH * AMBIENT_SAMPLE_MAP_SCALE,
+                        height: AMBIENT_SAMPLE_MAP_HEIGHT * AMBIENT_SAMPLE_MAP_SCALE,
+                      }}
+                    >
+                      <div
+                        className="absolute rounded border border-white/20"
+                        style={{
+                          left: AMBIENT_SAMPLE_OUTER_MARGIN * AMBIENT_SAMPLE_MAP_SCALE,
+                          top: AMBIENT_SAMPLE_OUTER_MARGIN * AMBIENT_SAMPLE_MAP_SCALE,
+                          width: WINDOW_WIDTH * AMBIENT_SAMPLE_MAP_SCALE,
+                          height: WINDOW_HEIGHT * AMBIENT_SAMPLE_MAP_SCALE,
+                        }}
+                      />
+                      {ambientSampleRects.map((rect) => (
+                        <div
+                          key={`rect-${rect.index}-${rect.left}-${rect.top}`}
+                          className="absolute rounded-[2px] border border-white/15"
+                          style={{
+                            left: (AMBIENT_SAMPLE_OUTER_MARGIN + rect.left) * AMBIENT_SAMPLE_MAP_SCALE,
+                            top: (AMBIENT_SAMPLE_OUTER_MARGIN + rect.top) * AMBIENT_SAMPLE_MAP_SCALE,
+                            width: rect.width * AMBIENT_SAMPLE_MAP_SCALE,
+                            height: rect.height * AMBIENT_SAMPLE_MAP_SCALE,
+                          }}
+                        >
+                          <div className="absolute bottom-0 left-1/2 -translate-x-1/2 text-[8px] text-zinc-200/80">
+                            {formatSampleValue(ambientSamples[rect.index])}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                <div className="space-y-1">
+                  <input
+                    data-no-drag
+                    type="range"
+                    min="0"
+                    max="1"
+                    step="0.01"
+                    value={ambientPreviewBrightness}
+                    onChange={(e) => setPreviewBrightnessValue(Number(e.target.value))}
+                    disabled={!ambientPreviewEnabled}
+                    className="w-full"
+                  />
+                  <div className="flex items-center justify-between text-[9px] text-zinc-400">
+                    <span>0.00</span>
+                    <span>{ambientPreviewBrightness.toFixed(2)}</span>
+                    <span>1.00</span>
+                  </div>
+                  <div className="flex flex-wrap gap-1">
+                    {[
+                      AMBIENT_SEG1_START,
+                      AMBIENT_SEG1_END,
+                      AMBIENT_SEG2_END,
+                      AMBIENT_SEG3_END,
+                    ].map((value, index) => (
+                      <button
+                        key={`${value}-${index}`}
+                        type="button"
+                        data-no-drag
+                        onClick={() => {
+                          setAmbientPreviewEnabled(true);
+                          setPreviewBrightnessValue(value);
+                        }}
+                        className="rounded border border-white/10 bg-white/5 px-1.5 py-0.5 text-[9px] text-zinc-200 hover:bg-white/10"
+                      >
+                        {value.toFixed(2)}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="grid grid-cols-[34px_1fr_1fr_1fr] items-center gap-1 text-[9px] text-zinc-300">
+                  <div className="text-center text-zinc-400">亮度</div>
+                  <div className="text-center">Top</div>
+                  <div className="text-center">Bottom</div>
+                  <div className="text-center">Vig</div>
+                  <div className="text-center text-zinc-400">{AMBIENT_SEG1_START.toFixed(2)}</div>
+                  <input
+                    data-no-drag
+                    className="w-full rounded border border-white/10 bg-black/30 px-1 py-0.5 text-[9px] text-zinc-100"
+                    type="number"
+                    min="0"
+                    max="1"
+                    step="0.01"
+                    value={ambientConfig.seg1.top}
+                    onChange={(e) => setAmbientConfigValue('seg1', 'top', e.target.value)}
+                  />
+                  <input
+                    data-no-drag
+                    className="w-full rounded border border-white/10 bg-black/30 px-1 py-0.5 text-[9px] text-zinc-100"
+                    type="number"
+                    min="0"
+                    max="1"
+                    step="0.01"
+                    value={ambientConfig.seg1.bottom}
+                    onChange={(e) => setAmbientConfigValue('seg1', 'bottom', e.target.value)}
+                  />
+                  <input
+                    data-no-drag
+                    className="w-full rounded border border-white/10 bg-black/30 px-1 py-0.5 text-[9px] text-zinc-100"
+                    type="number"
+                    min="0"
+                    max="1"
+                    step="0.01"
+                    value={ambientConfig.seg1.vignette}
+                    onChange={(e) => setAmbientConfigValue('seg1', 'vignette', e.target.value)}
+                  />
+                  <div className="text-center text-zinc-400">{AMBIENT_SEG1_END.toFixed(2)}</div>
+                  <input
+                    data-no-drag
+                    className="w-full rounded border border-white/10 bg-black/30 px-1 py-0.5 text-[9px] text-zinc-100"
+                    type="number"
+                    min="0"
+                    max="1"
+                    step="0.01"
+                    value={ambientConfig.seg2.top}
+                    onChange={(e) => setAmbientConfigValue('seg2', 'top', e.target.value)}
+                  />
+                  <input
+                    data-no-drag
+                    className="w-full rounded border border-white/10 bg-black/30 px-1 py-0.5 text-[9px] text-zinc-100"
+                    type="number"
+                    min="0"
+                    max="1"
+                    step="0.01"
+                    value={ambientConfig.seg2.bottom}
+                    onChange={(e) => setAmbientConfigValue('seg2', 'bottom', e.target.value)}
+                  />
+                  <input
+                    data-no-drag
+                    className="w-full rounded border border-white/10 bg-black/30 px-1 py-0.5 text-[9px] text-zinc-100"
+                    type="number"
+                    min="0"
+                    max="1"
+                    step="0.01"
+                    value={ambientConfig.seg2.vignette}
+                    onChange={(e) => setAmbientConfigValue('seg2', 'vignette', e.target.value)}
+                  />
+                  <div className="text-center text-zinc-400">{AMBIENT_SEG2_END.toFixed(2)}</div>
+                  <input
+                    data-no-drag
+                    className="w-full rounded border border-white/10 bg-black/30 px-1 py-0.5 text-[9px] text-zinc-100"
+                    type="number"
+                    min="0"
+                    max="1"
+                    step="0.01"
+                    value={ambientConfig.seg3.top}
+                    onChange={(e) => setAmbientConfigValue('seg3', 'top', e.target.value)}
+                  />
+                  <input
+                    data-no-drag
+                    className="w-full rounded border border-white/10 bg-black/30 px-1 py-0.5 text-[9px] text-zinc-100"
+                    type="number"
+                    min="0"
+                    max="1"
+                    step="0.01"
+                    value={ambientConfig.seg3.bottom}
+                    onChange={(e) => setAmbientConfigValue('seg3', 'bottom', e.target.value)}
+                  />
+                  <input
+                    data-no-drag
+                    className="w-full rounded border border-white/10 bg-black/30 px-1 py-0.5 text-[9px] text-zinc-100"
+                    type="number"
+                    min="0"
+                    max="1"
+                    step="0.01"
+                    value={ambientConfig.seg3.vignette}
+                    onChange={(e) => setAmbientConfigValue('seg3', 'vignette', e.target.value)}
+                  />
+                  <div className="text-center text-zinc-400">{AMBIENT_SEG3_END.toFixed(2)}</div>
+                  <input
+                    data-no-drag
+                    className="w-full rounded border border-white/10 bg-black/30 px-1 py-0.5 text-[9px] text-zinc-100"
+                    type="number"
+                    min="0"
+                    max="1"
+                    step="0.01"
+                    value={ambientConfig.seg4.top}
+                    onChange={(e) => setAmbientConfigValue('seg4', 'top', e.target.value)}
+                  />
+                  <input
+                    data-no-drag
+                    className="w-full rounded border border-white/10 bg-black/30 px-1 py-0.5 text-[9px] text-zinc-100"
+                    type="number"
+                    min="0"
+                    max="1"
+                    step="0.01"
+                    value={ambientConfig.seg4.bottom}
+                    onChange={(e) => setAmbientConfigValue('seg4', 'bottom', e.target.value)}
+                  />
+                  <input
+                    data-no-drag
+                    className="w-full rounded border border-white/10 bg-black/30 px-1 py-0.5 text-[9px] text-zinc-100"
+                    type="number"
+                    min="0"
+                    max="1"
+                    step="0.01"
+                    value={ambientConfig.seg4.vignette}
+                    onChange={(e) => setAmbientConfigValue('seg4', 'vignette', e.target.value)}
+                  />
+                </div>
+                <div className="flex items-center justify-end gap-2 pt-1">
+                  <button
+                    type="button"
+                    data-no-drag
+                    onClick={toggleAmbientLogging}
+                    className={`rounded border px-2 py-1 text-[10px] ${
+                      ambientLogging
+                        ? 'border-red-500/40 bg-red-500/15 text-red-100 hover:bg-red-500/25'
+                        : 'border-white/10 bg-white/5 text-zinc-200 hover:bg-white/10'
+                    }`}
+                  >
+                    {ambientLogging ? '停止记录' : '开始记录'}
+                  </button>
+                  <button
+                    type="button"
+                    data-no-drag
+                    onClick={applyAmbientConfig}
+                    className="rounded border border-white/10 bg-white/10 px-2 py-1 text-[10px] text-zinc-100 hover:bg-white/20"
+                  >
+                    应用参数
+                  </button>
+                </div>
+              </div>
+            )}
+         </div>
+
+         {showAmbientSamplePoints && (
+          <div className="absolute inset-0 z-10 pointer-events-none">
+            {AMBIENT_SAMPLE_MARKERS.rings.map((offset, ringIndex) =>
+              AMBIENT_SAMPLE_MARKERS.x.map((x, index) => {
+                const value = ambientSamples[getSampleIndex(ringIndex, 'top', index)];
+                return (
+                  <div
+                    key={`top-${ringIndex}-${x}`}
+                    className="absolute -translate-x-1/2"
+                    style={{ left: `${x * 100}%`, top: offset }}
+                  >
+                    <div className="flex flex-col items-center gap-0.5">
+                      <div className="h-2 w-2 rounded-full bg-white/60 ring-1 ring-white/20" />
+                      <div className="text-[8px] text-zinc-200/80">
+                        {formatSampleValue(value)}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })
+            )}
+            {AMBIENT_SAMPLE_MARKERS.rings.map((offset, ringIndex) =>
+              AMBIENT_SAMPLE_MARKERS.x.map((x, index) => {
+                const value = ambientSamples[getSampleIndex(ringIndex, 'bottom', index)];
+                return (
+                  <div
+                    key={`bottom-${ringIndex}-${x}`}
+                    className="absolute -translate-x-1/2"
+                    style={{ left: `${x * 100}%`, bottom: offset }}
+                  >
+                    <div className="flex flex-col items-center gap-0.5">
+                      <div className="h-2 w-2 rounded-full bg-white/60 ring-1 ring-white/20" />
+                      <div className="text-[8px] text-zinc-200/80">
+                        {formatSampleValue(value)}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })
+            )}
+            {AMBIENT_SAMPLE_MARKERS.rings.map((offset, ringIndex) =>
+              AMBIENT_SAMPLE_MARKERS.y.map((y, index) => {
+                const value = ambientSamples[getSampleIndex(ringIndex, 'left', index)];
+                return (
+                  <div
+                    key={`left-${ringIndex}-${y}`}
+                    className="absolute -translate-y-1/2"
+                    style={{ top: `${y * 100}%`, left: offset }}
+                  >
+                    <div className="flex flex-col items-center gap-0.5">
+                      <div className="h-2 w-2 rounded-full bg-white/60 ring-1 ring-white/20" />
+                      <div className="text-[8px] text-zinc-200/80">
+                        {formatSampleValue(value)}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })
+            )}
+            {AMBIENT_SAMPLE_MARKERS.rings.map((offset, ringIndex) =>
+              AMBIENT_SAMPLE_MARKERS.y.map((y, index) => {
+                const value = ambientSamples[getSampleIndex(ringIndex, 'right', index)];
+                return (
+                  <div
+                    key={`right-${ringIndex}-${y}`}
+                    className="absolute -translate-y-1/2"
+                    style={{ top: `${y * 100}%`, right: offset }}
+                  >
+                    <div className="flex flex-col items-center gap-0.5">
+                      <div className="h-2 w-2 rounded-full bg-white/60 ring-1 ring-white/20" />
+                      <div className="text-[8px] text-zinc-200/80">
+                        {formatSampleValue(value)}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+         )}
 
          {/* bento-grid 风格背景（偏黑白，带轻微冷暖色偏移） */}
           <div className="absolute inset-0 z-0 pointer-events-none">
