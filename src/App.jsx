@@ -1342,6 +1342,20 @@ export default function App() {
 
   const isMouseActive = mouseStatus === 'ON'; 
   const isProcessing = mouseStatus === 'BOOTING' || mouseStatus === 'SHUTTING_DOWN';
+  const titleControlIconStyle = useMemo(() => {
+    const value = clamp01(ambientDebug.brightness);
+    const t = clamp01((value - 0.2) / 0.6);
+    const brightness = 1 + t * 1.2;
+    const opacity = 0.65 + t * 0.35;
+    return { filter: `brightness(${brightness})`, opacity };
+  }, [ambientDebug.brightness]);
+  const titleControlHoverStyle = useMemo(() => {
+    const value = clamp01(ambientDebug.brightness);
+    const mix = clamp01((value - 0.15) / 0.7);
+    const channel = Math.round(255 * (1 - mix));
+    const alpha = 0.14 + (0.1 - 0.14) * mix;
+    return { '--title-hover-bg': `rgba(${channel}, ${channel}, ${channel}, ${alpha.toFixed(3)})` };
+  }, [ambientDebug.brightness]);
 
   return (
     <div
@@ -2055,24 +2069,33 @@ export default function App() {
           style={{ WebkitAppRegion: 'no-drag' }}
         >
           <button
-            className="group p-1.5 rounded hover:bg-zinc-800 transition-colors"
+            className="group p-1.5 rounded transition-colors hover:bg-[color:var(--title-hover-bg)]"
             onClick={() => tauriMinimize().catch(() => {})}
+            style={titleControlHoverStyle}
           >
-            <Minus size={14} className="text-zinc-600 group-hover:text-zinc-200 transition-colors" />
+            <Minus
+              size={14}
+              className="text-zinc-600 group-hover:text-zinc-200 transition-colors"
+              style={titleControlIconStyle}
+            />
           </button>
           
             <button 
                 className={`group p-1.5 rounded transition-colors flex items-center justify-center
-                  ${isClosing ? 'bg-red-500/20 text-red-500' : 'hover:bg-red-500/10'}
+                  ${isClosing ? 'bg-red-500/35 text-red-500' : 'hover:bg-red-500/20'}
                 `}
                 onClick={requestClose}
             >
               {isClosing ? (
               <span className="flex items-center justify-center w-[14px] h-[14px]">
-                <Loader2 className="animate-spin w-full h-full block" />
+                <Loader2 className="animate-spin w-full h-full block" style={titleControlIconStyle} />
               </span>
              ) : (
-               <X size={14} className="text-zinc-600 group-hover:text-red-500 transition-colors" />
+               <X
+                 size={14}
+                 className="text-zinc-600 group-hover:text-red-500 transition-colors"
+                 style={titleControlIconStyle}
+               />
              )}
            </button>
          </div>
