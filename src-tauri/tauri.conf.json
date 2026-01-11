@@ -11,7 +11,13 @@
   },
   "tauri": {
     "allowlist": {
-      "all": true
+      "all": true,
+      "fs": {
+        "all": true,
+        "scope": [
+          "$APPDATA/**"
+        ]
+      }
     },
     "windows": [
       {
