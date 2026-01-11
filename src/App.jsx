@@ -102,6 +102,9 @@ const getSampleIndex = (ringIndex, side, pointIndex) => {
 };
 const AMBIENT_CONFIG_STORAGE_KEY = 'rawaccel-ambient-config-v1';
 const AMBIENT_SETTINGS_STORAGE_KEY = 'rawaccel-ambient-settings-v1';
+const AMBIENT_DEBUG_STORAGE_KEY = 'rawaccel-ambient-debug-ui';
+const AMBIENT_DEBUG_HOTKEY = { code: 'KeyD', ctrl: true, alt: true, shift: true };
+const IS_DEV = import.meta.env.DEV;
 const DEFAULT_AMBIENT_SETTINGS = {
   config: DEFAULT_AMBIENT_CONFIG,
   dropExtremesEnabled: true,
@@ -317,6 +320,14 @@ export default function App() {
   const [ambientPreviewBrightness, setAmbientPreviewBrightness] = useState(0.2);
   const [ambientTunerOpen, setAmbientTunerOpen] = useState(false);
   const [showAmbientSamplePoints, setShowAmbientSamplePoints] = useState(false);
+  const [showAmbientDebugPanel, setShowAmbientDebugPanel] = useState(() => {
+    if (IS_DEV) return true;
+    try {
+      return window.localStorage.getItem(AMBIENT_DEBUG_STORAGE_KEY) === '1';
+    } catch {
+      return false;
+    }
+  });
   const [dropExtremesEnabled, setDropExtremesEnabled] = useState(
     () => initialAmbientSettings.dropExtremesEnabled
   );
@@ -432,6 +443,29 @@ export default function App() {
     if (!isTauri) return;
     tauriInvoke('backend_set_ema_enabled', { enabled: emaEnabled }).catch(() => {});
   }, [emaEnabled]);
+
+  useEffect(() => {
+    const onKeyDown = (event) => {
+      if (!event) return;
+      if (
+        event.code === AMBIENT_DEBUG_HOTKEY.code &&
+        event.ctrlKey === AMBIENT_DEBUG_HOTKEY.ctrl &&
+        event.altKey === AMBIENT_DEBUG_HOTKEY.alt &&
+        event.shiftKey === AMBIENT_DEBUG_HOTKEY.shift
+      ) {
+        event.preventDefault();
+        setShowAmbientDebugPanel((prev) => {
+          const next = !prev;
+          try {
+            window.localStorage.setItem(AMBIENT_DEBUG_STORAGE_KEY, next ? '1' : '0');
+          } catch {}
+          return next;
+        });
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
 
   const ambientSampleRects = useMemo(() => {
     const source = AMBIENT_SAMPLE_SOURCE;
@@ -1414,124 +1448,125 @@ export default function App() {
 
          {/* Entire window is draggable; interactive elements opt-out via `button/input/...` or `data-no-drag`. */}
 
-         <div
-            data-no-drag
-            className="absolute top-3 left-3 z-20 pointer-events-auto w-[230px] rounded-md border border-white/10 bg-black/45 px-2 py-1 text-[10px] leading-4 text-zinc-200"
-          >
-            <div className="flex items-center justify-between gap-2">
-              <div className="font-semibold tracking-wide">亮度调参</div>
-              <button
-                type="button"
-                data-no-drag
-                className="rounded px-1 text-[10px] text-zinc-300 hover:text-white"
-                onClick={() => setAmbientTunerOpen((v) => !v)}
-              >
-                {ambientTunerOpen ? '收起' : '展开'}
-              </button>
-            </div>
-            <div className="mt-1 space-y-0.5">
-              <div>实时亮度 {ambientDebug.measured.toFixed(3)}</div>
-              <div>生效亮度 {ambientDebug.brightness.toFixed(3)}</div>
-              <div>渐变 {ambientDebug.top.toFixed(3)} / {ambientDebug.bottom.toFixed(3)}</div>
-              <div>暗角 {ambientDebug.vignette.toFixed(3)}</div>
-            </div>
-            {ambientTunerOpen && (
-              <div className="mt-2 space-y-2">
-                <label className="flex items-center gap-2">
-                  <input
-                    data-no-drag
-                    type="checkbox"
-                    checked={showAmbientSamplePoints}
-                    onChange={(e) => setShowAmbientSamplePoints(e.target.checked)}
-                    className="h-3 w-3 accent-white"
-                  />
-                  <span>显示采样点</span>
-                </label>
-                <label className="flex items-center gap-2">
-                  <input
-                    data-no-drag
-                    type="checkbox"
-                    checked={dropExtremesEnabled}
-                    onChange={(e) => setDropExtremesEnabled(e.target.checked)}
-                    className="h-3 w-3 accent-white"
-                  />
-                  <span>丢极值</span>
-                </label>
-                <label className="flex items-center gap-2">
-                  <input
-                    data-no-drag
-                    type="checkbox"
-                    checked={emaEnabled}
-                    onChange={(e) => setEmaEnabled(e.target.checked)}
-                    className="h-3 w-3 accent-white"
-                  />
-                  <span>EMA 平滑</span>
-                </label>
-                <div className="space-y-1">
-                  <div className="flex items-center justify-between text-[9px] text-zinc-300">
-                    <span>亮度平滑 (ms)</span>
-                    <span className="text-zinc-400">{Math.round(ambientSmoothMs)}</span>
-                  </div>
-                  <input
-                    data-no-drag
-                    type="range"
-                    min={AMBIENT_BRIGHTNESS_SMOOTH_MIN}
-                    max={AMBIENT_BRIGHTNESS_SMOOTH_MAX}
-                    step="10"
-                    value={ambientSmoothMs}
-                    onChange={(e) => setAmbientSmoothMsValue(e.target.value)}
-                    className="w-full"
-                  />
-                  <input
-                    data-no-drag
-                    className="w-full rounded border border-white/10 bg-black/30 px-1 py-0.5 text-[9px] text-zinc-100"
-                    type="number"
-                    min={AMBIENT_BRIGHTNESS_SMOOTH_MIN}
-                    max={AMBIENT_BRIGHTNESS_SMOOTH_MAX}
-                    step="10"
-                    value={ambientSmoothMs}
-                    onChange={(e) => setAmbientSmoothMsValue(e.target.value)}
-                  />
-                </div>
-                {showAmbientSamplePoints && (
-                  <div className="rounded border border-white/10 bg-black/30 p-2">
-                    <div className="mb-1 text-[9px] text-zinc-400">采样区域示意</div>
-                    <div
-                      className="relative"
-                      style={{
-                        width: AMBIENT_SAMPLE_MAP_WIDTH * AMBIENT_SAMPLE_MAP_SCALE,
-                        height: AMBIENT_SAMPLE_MAP_HEIGHT * AMBIENT_SAMPLE_MAP_SCALE,
-                      }}
-                    >
-                      <div
-                        className="absolute rounded border border-white/20"
-                        style={{
-                          left: AMBIENT_SAMPLE_OUTER_MARGIN * AMBIENT_SAMPLE_MAP_SCALE,
-                          top: AMBIENT_SAMPLE_OUTER_MARGIN * AMBIENT_SAMPLE_MAP_SCALE,
-                          width: WINDOW_WIDTH * AMBIENT_SAMPLE_MAP_SCALE,
-                          height: WINDOW_HEIGHT * AMBIENT_SAMPLE_MAP_SCALE,
-                        }}
-                      />
-                      {ambientSampleRects.map((rect) => (
-                        <div
-                          key={`rect-${rect.index}-${rect.left}-${rect.top}`}
-                          className="absolute rounded-[2px] border border-white/15"
-                          style={{
-                            left: (AMBIENT_SAMPLE_OUTER_MARGIN + rect.left) * AMBIENT_SAMPLE_MAP_SCALE,
-                            top: (AMBIENT_SAMPLE_OUTER_MARGIN + rect.top) * AMBIENT_SAMPLE_MAP_SCALE,
-                            width: rect.width * AMBIENT_SAMPLE_MAP_SCALE,
-                            height: rect.height * AMBIENT_SAMPLE_MAP_SCALE,
-                          }}
-                        >
-                          <div className="absolute bottom-0 left-1/2 -translate-x-1/2 text-[8px] text-zinc-200/80">
-                            {formatSampleValue(ambientSamples[rect.index])}
-                          </div>
-                        </div>
-                      ))}
+         {showAmbientDebugPanel && (
+           <div
+              data-no-drag
+              className="absolute top-3 left-3 z-20 pointer-events-auto w-[230px] rounded-md border border-white/10 bg-black/45 px-2 py-1 text-[10px] leading-4 text-zinc-200"
+            >
+              <div className="flex items-center justify-between gap-2">
+                <div className="font-semibold tracking-wide">亮度调参</div>
+                <button
+                  type="button"
+                  data-no-drag
+                  className="rounded px-1 text-[10px] text-zinc-300 hover:text-white"
+                  onClick={() => setAmbientTunerOpen((v) => !v)}
+                >
+                  {ambientTunerOpen ? '收起' : '展开'}
+                </button>
+              </div>
+              <div className="mt-1 space-y-0.5">
+                <div>实时亮度 {ambientDebug.measured.toFixed(3)}</div>
+                <div>生效亮度 {ambientDebug.brightness.toFixed(3)}</div>
+                <div>渐变 {ambientDebug.top.toFixed(3)} / {ambientDebug.bottom.toFixed(3)}</div>
+                <div>暗角 {ambientDebug.vignette.toFixed(3)}</div>
+              </div>
+              {ambientTunerOpen && (
+                <div className="mt-2 space-y-2">
+                  <label className="flex items-center gap-2">
+                    <input
+                      data-no-drag
+                      type="checkbox"
+                      checked={showAmbientSamplePoints}
+                      onChange={(e) => setShowAmbientSamplePoints(e.target.checked)}
+                      className="h-3 w-3 accent-white"
+                    />
+                    <span>显示采样点</span>
+                  </label>
+                  <label className="flex items-center gap-2">
+                    <input
+                      data-no-drag
+                      type="checkbox"
+                      checked={dropExtremesEnabled}
+                      onChange={(e) => setDropExtremesEnabled(e.target.checked)}
+                      className="h-3 w-3 accent-white"
+                    />
+                    <span>丢极值</span>
+                  </label>
+                  <label className="flex items-center gap-2">
+                    <input
+                      data-no-drag
+                      type="checkbox"
+                      checked={emaEnabled}
+                      onChange={(e) => setEmaEnabled(e.target.checked)}
+                      className="h-3 w-3 accent-white"
+                    />
+                    <span>EMA 平滑</span>
+                  </label>
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between text-[9px] text-zinc-300">
+                      <span>亮度平滑 (ms)</span>
+                      <span className="text-zinc-400">{Math.round(ambientSmoothMs)}</span>
                     </div>
+                    <input
+                      data-no-drag
+                      type="range"
+                      min={AMBIENT_BRIGHTNESS_SMOOTH_MIN}
+                      max={AMBIENT_BRIGHTNESS_SMOOTH_MAX}
+                      step="10"
+                      value={ambientSmoothMs}
+                      onChange={(e) => setAmbientSmoothMsValue(e.target.value)}
+                      className="w-full"
+                    />
+                    <input
+                      data-no-drag
+                      className="w-full rounded border border-white/10 bg-black/30 px-1 py-0.5 text-[9px] text-zinc-100"
+                      type="number"
+                      min={AMBIENT_BRIGHTNESS_SMOOTH_MIN}
+                      max={AMBIENT_BRIGHTNESS_SMOOTH_MAX}
+                      step="10"
+                      value={ambientSmoothMs}
+                      onChange={(e) => setAmbientSmoothMsValue(e.target.value)}
+                    />
                   </div>
-                )}
-                <div className="grid grid-cols-[34px_1fr_1fr_1fr] items-center gap-1 text-[9px] text-zinc-300">
+                  {showAmbientSamplePoints && (
+                    <div className="rounded border border-white/10 bg-black/30 p-2">
+                      <div className="mb-1 text-[9px] text-zinc-400">采样区域示意</div>
+                      <div
+                        className="relative"
+                        style={{
+                          width: AMBIENT_SAMPLE_MAP_WIDTH * AMBIENT_SAMPLE_MAP_SCALE,
+                          height: AMBIENT_SAMPLE_MAP_HEIGHT * AMBIENT_SAMPLE_MAP_SCALE,
+                        }}
+                      >
+                        <div
+                          className="absolute rounded border border-white/20"
+                          style={{
+                            left: AMBIENT_SAMPLE_OUTER_MARGIN * AMBIENT_SAMPLE_MAP_SCALE,
+                            top: AMBIENT_SAMPLE_OUTER_MARGIN * AMBIENT_SAMPLE_MAP_SCALE,
+                            width: WINDOW_WIDTH * AMBIENT_SAMPLE_MAP_SCALE,
+                            height: WINDOW_HEIGHT * AMBIENT_SAMPLE_MAP_SCALE,
+                          }}
+                        />
+                        {ambientSampleRects.map((rect) => (
+                          <div
+                            key={`rect-${rect.index}-${rect.left}-${rect.top}`}
+                            className="absolute rounded-[2px] border border-white/15"
+                            style={{
+                              left: (AMBIENT_SAMPLE_OUTER_MARGIN + rect.left) * AMBIENT_SAMPLE_MAP_SCALE,
+                              top: (AMBIENT_SAMPLE_OUTER_MARGIN + rect.top) * AMBIENT_SAMPLE_MAP_SCALE,
+                              width: rect.width * AMBIENT_SAMPLE_MAP_SCALE,
+                              height: rect.height * AMBIENT_SAMPLE_MAP_SCALE,
+                            }}
+                          >
+                            <div className="absolute bottom-0 left-1/2 -translate-x-1/2 text-[8px] text-zinc-200/80">
+                              {formatSampleValue(ambientSamples[rect.index])}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  <div className="grid grid-cols-[34px_1fr_1fr_1fr] items-center gap-1 text-[9px] text-zinc-300">
                   <div className="text-center text-zinc-400">亮度</div>
                   <div className="text-center">Top</div>
                   <div className="text-center">Bottom</div>
@@ -1686,6 +1721,7 @@ export default function App() {
               </div>
             )}
          </div>
+         )}
 
          {showAmbientSamplePoints && (
           <div className="absolute inset-0 z-10 pointer-events-none">
