@@ -186,7 +186,7 @@ const AMBIENT_SAMPLE_POINTS_PER_SIDE: i32 = 5;
 const AMBIENT_SAMPLE_INTERVAL_MS: u64 = 100;
 
 #[cfg(target_os = "windows")]
-const AMBIENT_EMIT_EPSILON: f32 = 0.005;
+const AMBIENT_EMIT_EPSILON: f32 = 0.0;
 
 #[cfg(target_os = "windows")]
 const AMBIENT_DROP_EXTREMES_DEFAULT: bool = true;
@@ -195,7 +195,7 @@ const AMBIENT_DROP_EXTREMES_DEFAULT: bool = true;
 const AMBIENT_EMA_ALPHA: f32 = 0.12;
 
 #[cfg(target_os = "windows")]
-const AMBIENT_EMA_ENABLED_DEFAULT: bool = true;
+const AMBIENT_EMA_ENABLED_DEFAULT: bool = false;
 
 #[cfg(target_os = "windows")]
 static AMBIENT_DROP_EXTREMES_ENABLED: std::sync::atomic::AtomicBool =

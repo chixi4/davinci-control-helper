@@ -46,7 +46,10 @@ const AMBIENT_SEG1_START = 0.08;
 const AMBIENT_SEG1_END = 0.20;
 const AMBIENT_SEG2_END = 0.30;
 const AMBIENT_SEG3_END = 0.60;
-const AMBIENT_LERP = 0.12;
+const AMBIENT_BRIGHTNESS_SMOOTH_DEFAULT_MS = 260;
+const AMBIENT_BRIGHTNESS_EPSILON = 0.0005;
+const AMBIENT_BRIGHTNESS_SMOOTH_MIN = 0;
+const AMBIENT_BRIGHTNESS_SMOOTH_MAX = 2000;
 const GLASS_TOP_SEG1 = 0.0225;
 const GLASS_BOTTOM_SEG1 = 0.045;
 const GLASS_TOP_SEG2 = 0.1125;
@@ -102,7 +105,16 @@ const AMBIENT_SETTINGS_STORAGE_KEY = 'rawaccel-ambient-settings-v1';
 const DEFAULT_AMBIENT_SETTINGS = {
   config: DEFAULT_AMBIENT_CONFIG,
   dropExtremesEnabled: true,
-  emaEnabled: true,
+  emaEnabled: false,
+  brightnessSmoothMs: AMBIENT_BRIGHTNESS_SMOOTH_DEFAULT_MS,
+};
+
+const clampAmbientSmoothMs = (value) => {
+  if (!Number.isFinite(value)) return DEFAULT_AMBIENT_SETTINGS.brightnessSmoothMs;
+  return Math.min(
+    AMBIENT_BRIGHTNESS_SMOOTH_MAX,
+    Math.max(AMBIENT_BRIGHTNESS_SMOOTH_MIN, value)
+  );
 };
 
 const sanitizeAmbientSegment = (segment, fallback) => {
@@ -156,6 +168,11 @@ const loadAmbientSettings = () => {
             typeof parsed.emaEnabled === 'boolean'
               ? parsed.emaEnabled
               : DEFAULT_AMBIENT_SETTINGS.emaEnabled,
+          brightnessSmoothMs: clampAmbientSmoothMs(
+            typeof parsed.brightnessSmoothMs === 'number'
+              ? parsed.brightnessSmoothMs
+              : DEFAULT_AMBIENT_SETTINGS.brightnessSmoothMs
+          ),
         };
       }
     }
@@ -304,6 +321,10 @@ export default function App() {
     () => initialAmbientSettings.dropExtremesEnabled
   );
   const [emaEnabled, setEmaEnabled] = useState(() => initialAmbientSettings.emaEnabled);
+  const [ambientSmoothMs, setAmbientSmoothMs] = useState(
+    () => initialAmbientSettings.brightnessSmoothMs
+  );
+  const ambientSmoothMsRef = useRef(ambientSmoothMs);
   const [ambientLogging, setAmbientLogging] = useState(false);
   const ambientLoggingRef = useRef(false);
   const ambientLogBuffer = useRef([]);
@@ -316,13 +337,15 @@ export default function App() {
   const ambientSamplesLast = useRef(0);
   const [ambientSamples, setAmbientSamples] = useState(() => Array(AMBIENT_SAMPLE_TOTAL).fill(null));
   const ambientSamplesRef = useRef(ambientSamples);
+  const ambientSmoothed = useRef(1.0);
+  const ambientStepTime = useRef(null);
   const ambientTop = useRef(ambientConfigRef.current.seg4.top);
   const ambientBottom = useRef(ambientConfigRef.current.seg4.bottom);
   const ambientVignette = useRef(ambientConfigRef.current.seg4.vignette);
   const ambientRaf = useRef(0);
   const ambientDebugLast = useRef(0);
   const [ambientDebug, setAmbientDebug] = useState(() => ({
-    brightness: ambientTarget.current,
+    brightness: ambientSmoothed.current,
     measured: ambientMeasured.current,
     top: ambientTop.current,
     bottom: ambientBottom.current,
@@ -352,7 +375,7 @@ export default function App() {
     if (!force && now - ambientDebugLast.current < 80) return;
     ambientDebugLast.current = now;
     setAmbientDebug({
-      brightness: ambientTarget.current,
+      brightness: ambientSmoothed.current,
       measured: ambientMeasured.current,
       top: ambientTop.current,
       bottom: ambientBottom.current,
@@ -385,6 +408,20 @@ export default function App() {
     const next = clamp01(value);
     setAmbientPreviewBrightness(next);
   };
+
+  const setAmbientSmoothMsValue = (raw) => {
+    const next = Number.parseFloat(raw);
+    if (!Number.isFinite(next)) return;
+    setAmbientSmoothMs(clampAmbientSmoothMs(next));
+  };
+
+  useEffect(() => {
+    ambientSmoothMsRef.current = ambientSmoothMs;
+    if (!ambientRaf.current) {
+      ambientStepTime.current = null;
+      ambientRaf.current = requestAnimationFrame(stepAmbient);
+    }
+  }, [ambientSmoothMs]);
 
   useEffect(() => {
     if (!isTauri) return;
@@ -449,6 +486,7 @@ export default function App() {
           config: ambientConfig,
           dropExtremesEnabled,
           emaEnabled,
+          brightnessSmoothMs: ambientSmoothMs,
         })
       );
       window.localStorage.setItem(
@@ -461,7 +499,7 @@ export default function App() {
   const buildAmbientLogPayload = () => ({
     timestamp: new Date().toISOString(),
     measured: ambientMeasured.current,
-    target: ambientTarget.current,
+    target: ambientSmoothed.current,
     top: ambientTop.current,
     bottom: ambientBottom.current,
     vignette: ambientVignette.current,
@@ -469,6 +507,7 @@ export default function App() {
     previewBrightness: ambientPreviewBrightness,
     dropExtremesEnabled,
     emaEnabled,
+    brightnessSmoothMs: ambientSmoothMsRef.current,
     config: ambientConfigRef.current,
     samples: ambientSamplesRef.current,
   });
@@ -647,33 +686,45 @@ export default function App() {
     el.style.setProperty('--glass-vignette-alpha', vignette.toFixed(3));
   };
 
-  const stepAmbient = () => {
-    const { top: targetTop, bottom: targetBottom, vignette: targetVignette } = getAmbientTargets(ambientTarget.current);
-    const currentTop = ambientTop.current;
-    const currentBottom = ambientBottom.current;
-    const currentVignette = ambientVignette.current;
-    const nextTop = currentTop + (targetTop - currentTop) * AMBIENT_LERP;
-    const nextBottom = currentBottom + (targetBottom - currentBottom) * AMBIENT_LERP;
-    const nextVignette = currentVignette + (targetVignette - currentVignette) * AMBIENT_LERP;
+  const stepAmbient = (timestamp) => {
+    const now = typeof timestamp === 'number' ? timestamp : performance.now();
+    const last = ambientStepTime.current;
+    const dt = last == null ? 0 : Math.min(64, Math.max(0, now - last));
+    ambientStepTime.current = now;
+
+    const targetBrightness = ambientTarget.current;
+    const currentBrightness = ambientSmoothed.current;
+    const smoothMs = Math.max(0, ambientSmoothMsRef.current ?? 0);
+    const alpha =
+      smoothMs > 0
+        ? 1 - Math.exp(-dt / smoothMs)
+        : 1;
+    const nextBrightness =
+      currentBrightness + (targetBrightness - currentBrightness) * alpha;
+    ambientSmoothed.current = nextBrightness;
+
+    const { top: nextTop, bottom: nextBottom, vignette: nextVignette } =
+      getAmbientTargets(nextBrightness);
     ambientTop.current = nextTop;
     ambientBottom.current = nextBottom;
     ambientVignette.current = nextVignette;
     applyAmbientStyle(nextTop, nextBottom, nextVignette);
     updateAmbientDebug();
-    if (
-      Math.abs(targetTop - nextTop) > 0.0005 ||
-      Math.abs(targetBottom - nextBottom) > 0.0005 ||
-      Math.abs(targetVignette - nextVignette) > 0.0005
-    ) {
+
+    if (Math.abs(targetBrightness - nextBrightness) > AMBIENT_BRIGHTNESS_EPSILON) {
       ambientRaf.current = requestAnimationFrame(stepAmbient);
       return;
     }
-    ambientTop.current = targetTop;
-    ambientBottom.current = targetBottom;
-    ambientVignette.current = targetVignette;
-    applyAmbientStyle(targetTop, targetBottom, targetVignette);
+
+    ambientSmoothed.current = targetBrightness;
+    const { top, bottom, vignette } = getAmbientTargets(targetBrightness);
+    ambientTop.current = top;
+    ambientBottom.current = bottom;
+    ambientVignette.current = vignette;
+    applyAmbientStyle(top, bottom, vignette);
     updateAmbientDebug(true);
     ambientRaf.current = 0;
+    ambientStepTime.current = null;
   };
 
   const closeContextMenu = () => setContextMenu(null);
@@ -925,6 +976,7 @@ export default function App() {
     ambientConfigRef.current = ambientConfig;
     updateAmbientDebug(true);
     if (!ambientRaf.current) {
+      ambientStepTime.current = null;
       ambientRaf.current = requestAnimationFrame(stepAmbient);
     }
   }, [ambientConfig]);
@@ -941,6 +993,7 @@ export default function App() {
     }
     updateAmbientDebug(true);
     if (!ambientRaf.current) {
+      ambientStepTime.current = null;
       ambientRaf.current = requestAnimationFrame(stepAmbient);
     }
   }, [ambientPreviewEnabled, ambientPreviewBrightness]);
@@ -961,6 +1014,7 @@ export default function App() {
           if (!ambientPreviewEnabledRef.current) {
             ambientTarget.current = ambientMeasured.current;
             if (!ambientRaf.current) {
+              ambientStepTime.current = null;
               ambientRaf.current = requestAnimationFrame(stepAmbient);
             }
           }
@@ -985,6 +1039,7 @@ export default function App() {
       if (ambientRaf.current) {
         cancelAnimationFrame(ambientRaf.current);
         ambientRaf.current = 0;
+        ambientStepTime.current = null;
       }
     };
   }, []);
@@ -1386,16 +1441,6 @@ export default function App() {
                   <input
                     data-no-drag
                     type="checkbox"
-                    checked={ambientPreviewEnabled}
-                    onChange={(e) => setAmbientPreviewEnabled(e.target.checked)}
-                    className="h-3 w-3 accent-white"
-                  />
-                  <span>预览亮度</span>
-                </label>
-                <label className="flex items-center gap-2">
-                  <input
-                    data-no-drag
-                    type="checkbox"
                     checked={showAmbientSamplePoints}
                     onChange={(e) => setShowAmbientSamplePoints(e.target.checked)}
                     className="h-3 w-3 accent-white"
@@ -1422,6 +1467,32 @@ export default function App() {
                   />
                   <span>EMA 平滑</span>
                 </label>
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between text-[9px] text-zinc-300">
+                    <span>亮度平滑 (ms)</span>
+                    <span className="text-zinc-400">{Math.round(ambientSmoothMs)}</span>
+                  </div>
+                  <input
+                    data-no-drag
+                    type="range"
+                    min={AMBIENT_BRIGHTNESS_SMOOTH_MIN}
+                    max={AMBIENT_BRIGHTNESS_SMOOTH_MAX}
+                    step="10"
+                    value={ambientSmoothMs}
+                    onChange={(e) => setAmbientSmoothMsValue(e.target.value)}
+                    className="w-full"
+                  />
+                  <input
+                    data-no-drag
+                    className="w-full rounded border border-white/10 bg-black/30 px-1 py-0.5 text-[9px] text-zinc-100"
+                    type="number"
+                    min={AMBIENT_BRIGHTNESS_SMOOTH_MIN}
+                    max={AMBIENT_BRIGHTNESS_SMOOTH_MAX}
+                    step="10"
+                    value={ambientSmoothMs}
+                    onChange={(e) => setAmbientSmoothMsValue(e.target.value)}
+                  />
+                </div>
                 {showAmbientSamplePoints && (
                   <div className="rounded border border-white/10 bg-black/30 p-2">
                     <div className="mb-1 text-[9px] text-zinc-400">采样区域示意</div>
@@ -1460,45 +1531,6 @@ export default function App() {
                     </div>
                   </div>
                 )}
-                <div className="space-y-1">
-                  <input
-                    data-no-drag
-                    type="range"
-                    min="0"
-                    max="1"
-                    step="0.01"
-                    value={ambientPreviewBrightness}
-                    onChange={(e) => setPreviewBrightnessValue(Number(e.target.value))}
-                    disabled={!ambientPreviewEnabled}
-                    className="w-full"
-                  />
-                  <div className="flex items-center justify-between text-[9px] text-zinc-400">
-                    <span>0.00</span>
-                    <span>{ambientPreviewBrightness.toFixed(2)}</span>
-                    <span>1.00</span>
-                  </div>
-                  <div className="flex flex-wrap gap-1">
-                    {[
-                      AMBIENT_SEG1_START,
-                      AMBIENT_SEG1_END,
-                      AMBIENT_SEG2_END,
-                      AMBIENT_SEG3_END,
-                    ].map((value, index) => (
-                      <button
-                        key={`${value}-${index}`}
-                        type="button"
-                        data-no-drag
-                        onClick={() => {
-                          setAmbientPreviewEnabled(true);
-                          setPreviewBrightnessValue(value);
-                        }}
-                        className="rounded border border-white/10 bg-white/5 px-1.5 py-0.5 text-[9px] text-zinc-200 hover:bg-white/10"
-                      >
-                        {value.toFixed(2)}
-                      </button>
-                    ))}
-                  </div>
-                </div>
                 <div className="grid grid-cols-[34px_1fr_1fr_1fr] items-center gap-1 text-[9px] text-zinc-300">
                   <div className="text-center text-zinc-400">亮度</div>
                   <div className="text-center">Top</div>
