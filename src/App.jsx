@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Mouse, Crosshair, RefreshCw, Minus, X, Loader2, AlertCircle, CheckCircle } from 'lucide-react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion, AnimatePresence, useMotionValue, animate } from 'framer-motion';
 
 const isTauri = typeof window !== 'undefined' && typeof window.__TAURI_IPC__ === 'function';
 
@@ -224,6 +224,15 @@ const FULLSCREEN_CONFIG = {
     shadowColor: "rgba(245,158,11,0.8)",
     pulse: true
   },
+  'DRIVER_MISSING': {
+    title: "未检测到驱动",
+    subtitle: "需要安装后才能应用灵敏度",
+    colorClass: "text-amber-400",
+    bgClass: "bg-amber-400",
+    borderClass: "border-amber-400",
+    shadowColor: "rgba(245,158,11,0.85)",
+    pulse: false
+  },
   'OFFLINE': {
     title: "后端离线",
     subtitle: "服务不可用",
@@ -279,6 +288,14 @@ export default function App() {
   
   const [notifications, setNotifications] = useState([]);
   const [fullScreenStatus, setFullScreenStatus] = useState(null);
+  const [driverNoticeActive, setDriverNoticeActive] = useState(false);
+  const [driverNoticePillDismissed, setDriverNoticePillDismissed] = useState(false);
+  const driverNoticeOverlayShown = useRef(false);
+  const driverPillDragging = useRef(false);
+  const overlayPointerStart = useRef(null);
+  const overlayPointerDragged = useRef(false);
+  const driverNoticePillY = useMotionValue(0);
+  const driverNoticeVisible = driverNoticeActive && !driverNoticePillDismissed && !fullScreenStatus;
   
   // 退出状态：用于处理点击关闭按钮后的延迟逻辑
   const [isClosing, setIsClosing] = useState(false);
@@ -379,6 +396,34 @@ export default function App() {
     setTimeout(() => {
       setNotifications(prev => prev.filter(n => n.id !== id));
     }, 3000);
+  };
+
+  useEffect(() => {
+    if (!driverNoticeVisible) return;
+    driverNoticePillY.set(-16);
+    const controls = animate(driverNoticePillY, 0, {
+      type: "spring",
+      stiffness: 500,
+      damping: 35,
+    });
+    return () => controls.stop();
+  }, [driverNoticePillY, driverNoticeVisible]);
+
+  const triggerDriverNotice = () => {
+    setDriverNoticeActive(true);
+    if (!driverNoticeOverlayShown.current) {
+      driverNoticeOverlayShown.current = true;
+      setFullScreenStatus('DRIVER_MISSING');
+    }
+  };
+
+  const isDriverMissingError = (err) => {
+    const normalized = String(err ?? '').trim();
+    if (!normalized) return false;
+    const upper = normalized.toUpperCase();
+    if (upper === 'RAWACCEL_NOT_INSTALLED' || upper === 'DRIVER_MISSING') return true;
+    if (normalized.includes('未检测到驱动')) return true;
+    return false;
   };
 
   const updateAmbientDebug = (force = false) => {
@@ -989,7 +1034,35 @@ export default function App() {
             return;
           }
 
-          if (kind === 'NOTIFY') return;
+          if (kind === 'NOTIFY') {
+            const msg = String(raw ?? '').trim();
+            if (!msg) return;
+
+            if (msg.startsWith('FS:')) {
+              const status = msg.slice(3).trim().toUpperCase();
+              if (status) setFullScreenStatus(status);
+              return;
+            }
+
+            if (msg.startsWith('ERR:')) {
+              const err = msg.slice(4).trim();
+              if (isDriverMissingError(err)) {
+                triggerDriverNotice();
+                return;
+              }
+              addNotification('error', err || '未知错误');
+              return;
+            }
+
+            if (msg.startsWith('OK:')) {
+              const ok = msg.slice(3).trim();
+              addNotification('success', ok || 'OK');
+              return;
+            }
+
+            addNotification('warn', msg);
+            return;
+          }
         });
         await tauriInvoke('backend_init');
       } catch (e) {
@@ -1833,77 +1906,174 @@ export default function App() {
             />
           </div>
 
-         {/* 全屏 Overlay (报错/状态显示) */}
-         <AnimatePresence>
-           {fullScreenStatus && FULLSCREEN_CONFIG[fullScreenStatus] && (
-            <motion.div
-              key="fullscreen-overlay"
-              initial={{ opacity: 0, backdropFilter: "blur(0px)" }}
-              animate={{ opacity: 1, backdropFilter: "blur(8px)" }}
-              exit={{ opacity: 0, backdropFilter: "blur(0px)" }}
-              transition={{ duration: 0.3 }}
-              data-no-drag
-              className={`absolute inset-0 z-[300] bg-zinc-950/80 flex flex-col items-center justify-center cursor-pointer ${FULLSCREEN_CONFIG[fullScreenStatus].colorClass}`}
-              onClick={() => setFullScreenStatus(null)}
-            >
+          {/* 全屏 Overlay (报错/状态显示) */}
+          <AnimatePresence>
+            {fullScreenStatus && FULLSCREEN_CONFIG[fullScreenStatus] && (
               <motion.div
+                key="fullscreen-overlay"
+                initial={{ opacity: 0, backdropFilter: "blur(0px)" }}
+                animate={{ opacity: 1, backdropFilter: "blur(8px)" }}
+                exit={{ opacity: 0, backdropFilter: "blur(0px)" }}
+                transition={{ duration: 0.3 }}
+                className={`absolute inset-0 z-[300] bg-zinc-950/80 flex flex-col items-center justify-center cursor-default ${FULLSCREEN_CONFIG[fullScreenStatus].colorClass}`}
+                onMouseDown={(e) => {
+                  if (e.button !== 0) return;
+                  overlayPointerStart.current = { x: e.clientX, y: e.clientY };
+                  overlayPointerDragged.current = false;
+                }}
+                onMouseMove={(e) => {
+                  const start = overlayPointerStart.current;
+                  if (!start) return;
+                  if (overlayPointerDragged.current) return;
+                  const distance = Math.hypot(e.clientX - start.x, e.clientY - start.y);
+                  if (distance >= 4) {
+                    overlayPointerDragged.current = true;
+                  }
+                }}
+                onMouseUp={() => {
+                  if (!overlayPointerStart.current) return;
+                  const dragged = overlayPointerDragged.current;
+                  overlayPointerStart.current = null;
+                  overlayPointerDragged.current = false;
+                  if (dragged) return;
+                  setFullScreenStatus(null);
+                }}
+                onMouseLeave={() => {
+                  overlayPointerStart.current = null;
+                  overlayPointerDragged.current = false;
+                }}
+              >
+                <motion.div
                 initial={{ scale: 0.9, opacity: 0 }}
                 animate={{ scale: 1, opacity: 1 }}
                 exit={{ scale: 0.9, opacity: 0 }}
                 transition={{ delay: 0.1, type: "spring" }}
                 className="flex flex-col items-center"
               >
-                 <div className="flex flex-col items-center gap-4">
-                    <h2 
-                        className="text-2xl font-black tracking-[0.12em] drop-shadow-lg text-center px-4"
-                        style={{ textShadow: `0 0 15px ${FULLSCREEN_CONFIG[fullScreenStatus].shadowColor}` }}
-                    >
-                        {FULLSCREEN_CONFIG[fullScreenStatus].title}
-                    </h2>
-                    
-                    <div className={`flex items-center gap-2.5 px-4 py-1.5 rounded-full border bg-opacity-10 
-                        ${FULLSCREEN_CONFIG[fullScreenStatus].bgClass} 
-                        ${FULLSCREEN_CONFIG[fullScreenStatus].borderClass}
-                        border-opacity-20 bg-opacity-10
-                    `}>
+                  <div className="flex flex-col items-center gap-4">
+                     <h2 
+                         className="text-2xl font-black tracking-[0.12em] drop-shadow-lg text-center px-4"
+                         style={{ textShadow: `0 0 15px ${FULLSCREEN_CONFIG[fullScreenStatus].shadowColor}` }}
+                     >
+                         {FULLSCREEN_CONFIG[fullScreenStatus].title}
+                     </h2>
+                     
+                     <div className={`flex items-center gap-2.5 px-4 py-1.5 rounded-full border bg-opacity-10 
+                         ${FULLSCREEN_CONFIG[fullScreenStatus].bgClass} 
+                         ${FULLSCREEN_CONFIG[fullScreenStatus].borderClass}
+                         border-opacity-20 bg-opacity-10
+                     `}>
                        <div className="relative flex items-center justify-center w-2 h-2">
                           {FULLSCREEN_CONFIG[fullScreenStatus].pulse && (
                               <div className={`absolute w-full h-full rounded-full animate-ping opacity-75 ${FULLSCREEN_CONFIG[fullScreenStatus].bgClass}`} />
                           )}
                           <div className={`relative w-1.5 h-1.5 rounded-full ${FULLSCREEN_CONFIG[fullScreenStatus].bgClass}`} />
                        </div>
-                       <span className={`text-[10px] font-bold tracking-widest opacity-80`}>
-                          {FULLSCREEN_CONFIG[fullScreenStatus].subtitle}
-                       </span>
-                    </div>
+                        <span className={`text-[10px] font-bold tracking-widest opacity-80`}>
+                           {FULLSCREEN_CONFIG[fullScreenStatus].subtitle}
+                        </span>
+                     </div>
+
+                    {fullScreenStatus === 'DRIVER_MISSING' && (
+                      <div className="mt-2 w-[280px] rounded-2xl border border-white/10 bg-zinc-950/40 px-4 py-3 backdrop-blur-md text-[12px] leading-relaxed text-zinc-200/90 font-sans">
+                        <div className="text-[12px] font-medium tracking-[0.04em] text-zinc-200/90 font-sans">需要做什么</div>
+                        <div className="mt-2 space-y-1 text-zinc-300/90">
+                          <div>1) 在便携版目录右键运行 “01_Install_RawAccel_Driver.exe”</div>
+                          <div>2) 安装后重启电脑</div>
+                          <div>3) 重启后再打开本软件</div>
+                        </div>
+                        <div className="mt-3 text-[11px] text-zinc-400/90">
+                          自动点击功能仍可用，但调整灵敏度无效。
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </motion.div>
+             </motion.div>
+           )}
+         </AnimatePresence>
+
+         {/* 常驻驱动提示胶囊（上拉关闭，点击打开详情） */}
+         <AnimatePresence>
+           {driverNoticeVisible && (
+             <motion.div
+               key="driver-notice-pill"
+                initial={{ opacity: 0, scale: 0.96 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.96 }}
+                transition={{ type: "spring", stiffness: 500, damping: 35 }}
+                className="absolute top-4 left-0 w-full flex justify-center z-[410]"
+                style={{ y: driverNoticePillY }}
+                drag="y"
+                dragConstraints={{ top: -80, bottom: 0 }}
+                dragMomentum={false}
+                dragElastic={0}
+                onDragStart={() => {
+                  driverPillDragging.current = true;
+                }}
+                onDragEnd={(_, info) => {
+                  const shouldDismiss = info.offset.y < -32 || info.velocity.y < -700;
+                  if (shouldDismiss) {
+                    driverPillDragging.current = false;
+                    setDriverNoticePillDismissed(true);
+                    return;
+                  }
+                  animate(driverNoticePillY, 0, {
+                    type: "spring",
+                    stiffness: 500,
+                    damping: 35,
+                  });
+                  window.setTimeout(() => {
+                    driverPillDragging.current = false;
+                  }, 0);
+                }}
+               onClick={() => {
+                 if (driverPillDragging.current) return;
+                 setFullScreenStatus('DRIVER_MISSING');
+               }}
+               data-no-drag
+             >
+               <div className="bg-amber-950/80 backdrop-blur-md border border-amber-500/20 text-amber-200 pl-1 pr-3 py-1 rounded-full shadow-[0_4px_20px_rgba(245,158,11,0.18)] flex items-center gap-2 whitespace-nowrap">
+                 <div className="w-6 h-6 rounded-full bg-amber-500/20 flex items-center justify-center shrink-0">
+                   <AlertCircle size={14} className="text-amber-400" />
                  </div>
-              </motion.div>
+                <span className="text-[10px] font-bold tracking-widest opacity-90">
+                  未检测到驱动
+                </span>
+              </div>
             </motion.div>
           )}
         </AnimatePresence>
 
          {/* 顶部通知列表 */}
-         <div className="absolute top-8 left-0 w-full flex justify-center z-[400] pointer-events-none">
-            <AnimatePresence mode='popLayout'>
-                {notifications.map((notif, index) => {
-                    const isError = notif.type === 'error';
-                    const styleConfig = isError ? {
-                        bg: "bg-red-950/80",
-                        border: "border-red-500/20",
-                        text: "text-red-200",
-                        iconBg: "bg-red-500/20",
-                        iconColor: "text-red-500",
-                        shadow: "shadow-[0_4px_20px_rgba(220,38,38,0.2)]",
+          <div className="absolute top-8 left-0 w-full flex justify-center z-[400] pointer-events-none">
+             <AnimatePresence mode='popLayout'>
+                 {notifications.map((notif, index) => {
+                    const styleConfig = notif.type === 'error' ? {
+                         bg: "bg-red-950/80",
+                         border: "border-red-500/20",
+                         text: "text-red-200",
+                         iconBg: "bg-red-500/20",
+                         iconColor: "text-red-500",
+                         shadow: "shadow-[0_4px_20px_rgba(220,38,38,0.2)]",
+                         Icon: AlertCircle
+                    } : notif.type === 'warn' ? {
+                        bg: "bg-amber-950/80",
+                        border: "border-amber-500/20",
+                        text: "text-amber-200",
+                        iconBg: "bg-amber-500/20",
+                        iconColor: "text-amber-400",
+                        shadow: "shadow-[0_4px_20px_rgba(245,158,11,0.18)]",
                         Icon: AlertCircle
-                    } : {
-                        bg: "bg-emerald-950/80",
-                        border: "border-emerald-500/20",
-                        text: "text-emerald-200",
-                        iconBg: "bg-emerald-500/20",
-                        iconColor: "text-emerald-500",
-                        shadow: "shadow-[0_4px_20px_rgba(16,185,129,0.2)]",
-                        Icon: CheckCircle
-                    };
+                     } : {
+                         bg: "bg-emerald-950/80",
+                         border: "border-emerald-500/20",
+                         text: "text-emerald-200",
+                         iconBg: "bg-emerald-500/20",
+                         iconColor: "text-emerald-500",
+                         shadow: "shadow-[0_4px_20px_rgba(16,185,129,0.2)]",
+                         Icon: CheckCircle
+                     };
 
                     return (
                         <motion.div

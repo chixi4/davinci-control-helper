@@ -110,8 +110,13 @@ async function main() {
   const portableRoot = path.join(repoRoot, 'dist-portable');
   const portableDir = path.join(portableRoot, 'RawAccel Monitor');
   const portableBackendDir = path.join(portableDir, 'backend');
+  const portableDriverDir = path.join(portableDir, 'driver');
   await ensureDir(portableDir);
   await ensureDir(portableBackendDir);
+  await ensureDir(portableDriverDir);
+
+  // Cleanup legacy layout (older builds placed rawaccel.sys at the root).
+  await fs.rm(path.join(portableDir, 'rawaccel.sys'), { force: true }).catch(() => {});
 
   const portableFiles = [
     { src: appExe, dest: appExeName },
@@ -119,7 +124,7 @@ async function main() {
     // RawAccel driver install/uninstall helpers (optional but recommended).
     { src: path.join(repoRoot, '_archive', 'installer.exe'), dest: '01_Install_RawAccel_Driver.exe', optional: true },
     { src: path.join(repoRoot, '_archive', 'uninstaller.exe'), dest: '02_Uninstall_RawAccel_Driver.exe', optional: true },
-    { src: path.join(repoRoot, 'driver', 'rawaccel.sys'), dest: 'rawaccel.sys', optional: true },
+    { src: path.join(repoRoot, 'driver', 'rawaccel.sys'), dest: path.join('driver', 'rawaccel.sys'), optional: true },
 
     // Backend runtime (kept in a subfolder to avoid users clicking the wrong exe).
     { src: path.join(targetBackendDir, 'mouse_monitor.exe'), dest: path.join('backend', 'mouse_monitor.exe') },
@@ -165,6 +170,7 @@ async function main() {
       '',
       '注意：',
       '- backend/ 目录内是程序运行所需文件（mouse_monitor.exe / writer.exe / settings.json 等），请勿单独运行或移动。',
+      '- 驱动文件在 driver/rawaccel.sys（请勿移动/改名，否则安装器可能提示 “Can\'t find driver binary”。）',
       '- 高级配置文件在 backend/settings.json（如不确定不要改）。',
       '- 若 GUI 无法启动，通常是缺少 WebView2 Runtime（Windows 10/11 一般自带）。',
       '',
