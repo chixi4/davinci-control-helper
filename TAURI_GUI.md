@@ -83,7 +83,7 @@ Optional (for installing/uninstalling the RawAccel driver on a new PC):
 
 - `01_Install_RawAccel_Driver.exe`
 - `02_Uninstall_RawAccel_Driver.exe`
-- `rawaccel.sys`
+- `driver/rawaccel.sys`
 
 ## IPC protocol (debug)
 

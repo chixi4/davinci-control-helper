@@ -127,6 +127,7 @@ bool LoadLastRegisteredHardwareId(std::string& hardwareId);
 void ClearLastRegisteredHardwareId();
 bool TryRestoreLastRegisteredMouse();
 bool UpdateSettingsForDevice(const std::string& hardwareId, double sensitivity, std::string& errorMsg);
+bool IsRawAccelDriverInstalled();
 bool RunWriterExe();
 void HandleSensitivityInput();
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -272,6 +273,12 @@ bool ApplySensitivityMultiplier(double multiplier, std::string& errorMsg) {
             return false;
         }
 
+        if (!IsRawAccelDriverInstalled()) {
+            // Prevent writer.exe from popping a blocking dialog when the driver isn't installed.
+            errorMsg = "RAWACCEL_NOT_INSTALLED";
+            return false;
+        }
+
         if (!RunWriterExe()) {
             errorMsg = "writer.exe failed";
             return false;
@@ -304,6 +311,12 @@ bool RestoreDefaultSensitivity(std::string& errorMsg) {
 
     if (!WriteFileContent(g_settingsPath.c_str(), content)) {
         errorMsg = "failed to write settings.json";
+        return false;
+    }
+
+    if (!IsRawAccelDriverInstalled()) {
+        // Prevent writer.exe from popping a blocking dialog when the driver isn't installed.
+        errorMsg = "RAWACCEL_NOT_INSTALLED";
         return false;
     }
 
@@ -1511,7 +1524,34 @@ bool UpdateSettingsForDevice(const std::string& hardwareId, double sensitivity, 
 }
 
 // 运行writer.exe应用配置
+bool IsRawAccelDriverInstalled() {
+    char windowsDir[MAX_PATH] = {0};
+    UINT len = GetWindowsDirectoryA(windowsDir, MAX_PATH);
+    if (len == 0 || len >= MAX_PATH) {
+        return false;
+    }
+
+    BOOL wow64 = FALSE;
+    IsWow64Process(GetCurrentProcess(), &wow64);
+
+    std::string path(windowsDir);
+    path += wow64 ? "\\Sysnative\\drivers\\rawaccel.sys" : "\\System32\\drivers\\rawaccel.sys";
+
+    DWORD attrs = GetFileAttributesA(path.c_str());
+    if (attrs == INVALID_FILE_ATTRIBUTES) {
+        return false;
+    }
+    if (attrs & FILE_ATTRIBUTE_DIRECTORY) {
+        return false;
+    }
+    return true;
+}
+
 bool RunWriterExe() {
+    if (!IsRawAccelDriverInstalled()) {
+        return false;
+    }
+
     char modulePath[MAX_PATH] = {0};
     if (!GetModuleFileNameA(NULL, modulePath, MAX_PATH)) {
         return false;
