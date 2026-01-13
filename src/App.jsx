@@ -42,6 +42,11 @@ async function tauriStartDragging() {
 
 const WINDOW_WIDTH = 320;
 const WINDOW_HEIGHT = 460;
+const NOTIFICATION_STACK_STEP = 42;
+const NOTIFICATION_PILL_EXTRA_OFFSET = 16;
+const NOTIFICATION_EXIT_MS = 200;
+const TITLE_CONTROL_EMA_ALPHA = 0.18;
+const TITLE_CONTROL_EMA_EPSILON = 0.002;
 const AMBIENT_SEG1_START = 0.08;
 const AMBIENT_SEG1_END = 0.20;
 const AMBIENT_SEG2_END = 0.30;
@@ -290,11 +295,14 @@ export default function App() {
   const [fullScreenStatus, setFullScreenStatus] = useState(null);
   const [driverNoticeActive, setDriverNoticeActive] = useState(false);
   const [driverNoticePillDismissed, setDriverNoticePillDismissed] = useState(false);
+  const [notificationStackCount, setNotificationStackCount] = useState(0);
   const driverNoticeOverlayShown = useRef(false);
   const driverPillDragging = useRef(false);
   const overlayPointerStart = useRef(null);
   const overlayPointerDragged = useRef(false);
+  const notificationStackTimer = useRef(null);
   const driverNoticePillY = useMotionValue(0);
+  const driverNoticePillStackOffset = useMotionValue(0);
   const driverNoticeVisible = driverNoticeActive && !driverNoticePillDismissed && !fullScreenStatus;
   
   // 退出状态：用于处理点击关闭按钮后的延迟逻辑
@@ -408,6 +416,47 @@ export default function App() {
     });
     return () => controls.stop();
   }, [driverNoticePillY, driverNoticeVisible]);
+
+  useEffect(() => {
+    if (!driverNoticeVisible) {
+      driverNoticePillStackOffset.set(0);
+      return;
+    }
+    const stackCount = notificationStackCount;
+    const extraOffset = stackCount ? NOTIFICATION_PILL_EXTRA_OFFSET : 0;
+    const target = stackCount * NOTIFICATION_STACK_STEP + extraOffset;
+    const controls = animate(driverNoticePillStackOffset, target, {
+      type: "spring",
+      stiffness: 500,
+      damping: 35,
+    });
+    return () => controls.stop();
+  }, [driverNoticeVisible, notificationStackCount, driverNoticePillStackOffset]);
+
+  useEffect(() => {
+    const nextCount = notifications.length;
+    if (notificationStackTimer.current) {
+      clearTimeout(notificationStackTimer.current);
+      notificationStackTimer.current = null;
+    }
+
+    if (nextCount >= notificationStackCount) {
+      setNotificationStackCount(nextCount);
+      return;
+    }
+
+    notificationStackTimer.current = setTimeout(() => {
+      setNotificationStackCount(nextCount);
+      notificationStackTimer.current = null;
+    }, NOTIFICATION_EXIT_MS);
+
+    return () => {
+      if (notificationStackTimer.current) {
+        clearTimeout(notificationStackTimer.current);
+        notificationStackTimer.current = null;
+      }
+    };
+  }, [notifications.length, notificationStackCount]);
 
   const triggerDriverNotice = () => {
     setDriverNoticeActive(true);
@@ -1415,20 +1464,73 @@ export default function App() {
 
   const isMouseActive = mouseStatus === 'ON'; 
   const isProcessing = mouseStatus === 'BOOTING' || mouseStatus === 'SHUTTING_DOWN';
+  const titleControlBrightnessTarget = useMemo(() => {
+    const ringIndex = 0;
+    const topIndex = getSampleIndex(ringIndex, 'top', AMBIENT_SAMPLE_POINTS_PER_SIDE - 1);
+    const rightIndex = getSampleIndex(ringIndex, 'right', 0);
+    const values = [ambientSamples[topIndex], ambientSamples[rightIndex]].filter(
+      (value) => typeof value === 'number' && Number.isFinite(value)
+    );
+    if (!values.length) return clamp01(ambientDebug.brightness);
+    const average = values.reduce((sum, value) => sum + value, 0) / values.length;
+    return clamp01(average);
+  }, [ambientSamples, ambientDebug.brightness]);
+  const [titleControlBrightnessSmoothed, setTitleControlBrightnessSmoothed] = useState(() =>
+    clamp01(ambientDebug.brightness)
+  );
+  const titleControlBrightnessRef = useRef(titleControlBrightnessSmoothed);
+  const titleControlBrightnessTargetRef = useRef(titleControlBrightnessTarget);
+  const titleControlBrightnessRaf = useRef(0);
+
+  useEffect(() => {
+    titleControlBrightnessRef.current = titleControlBrightnessSmoothed;
+  }, [titleControlBrightnessSmoothed]);
+
+  useEffect(() => {
+    titleControlBrightnessTargetRef.current = titleControlBrightnessTarget;
+    if (titleControlBrightnessRaf.current) {
+      cancelAnimationFrame(titleControlBrightnessRaf.current);
+      titleControlBrightnessRaf.current = 0;
+    }
+
+    const step = () => {
+      const current = titleControlBrightnessRef.current;
+      const target = titleControlBrightnessTargetRef.current;
+      const next = current + (target - current) * TITLE_CONTROL_EMA_ALPHA;
+      const clamped = clamp01(next);
+      if (Math.abs(target - clamped) <= TITLE_CONTROL_EMA_EPSILON) {
+        titleControlBrightnessRef.current = target;
+        setTitleControlBrightnessSmoothed(target);
+        titleControlBrightnessRaf.current = 0;
+        return;
+      }
+      titleControlBrightnessRef.current = clamped;
+      setTitleControlBrightnessSmoothed(clamped);
+      titleControlBrightnessRaf.current = requestAnimationFrame(step);
+    };
+
+    titleControlBrightnessRaf.current = requestAnimationFrame(step);
+    return () => {
+      if (titleControlBrightnessRaf.current) {
+        cancelAnimationFrame(titleControlBrightnessRaf.current);
+        titleControlBrightnessRaf.current = 0;
+      }
+    };
+  }, [titleControlBrightnessTarget]);
   const titleControlIconStyle = useMemo(() => {
-    const value = clamp01(ambientDebug.brightness);
+    const value = titleControlBrightnessSmoothed;
     const t = clamp01((value - 0.2) / 0.6);
     const brightness = 1 + t * 1.2;
     const opacity = 0.65 + t * 0.35;
     return { filter: `brightness(${brightness})`, opacity };
-  }, [ambientDebug.brightness]);
+  }, [titleControlBrightnessSmoothed]);
   const titleControlHoverStyle = useMemo(() => {
-    const value = clamp01(ambientDebug.brightness);
+    const value = titleControlBrightnessSmoothed;
     const mix = clamp01((value - 0.15) / 0.7);
     const channel = Math.round(255 * (1 - mix));
     const alpha = 0.14 + (0.1 - 0.14) * mix;
     return { '--title-hover-bg': `rgba(${channel}, ${channel}, ${channel}, ${alpha.toFixed(3)})` };
-  }, [ambientDebug.brightness]);
+  }, [titleControlBrightnessSmoothed]);
 
   return (
     <div
@@ -1978,7 +2080,7 @@ export default function App() {
                       <div className="mt-2 w-[280px] rounded-2xl border border-white/10 bg-zinc-950/40 px-4 py-3 backdrop-blur-md text-[12px] leading-relaxed text-zinc-200/90 font-sans">
                         <div className="text-[12px] font-medium tracking-[0.04em] text-zinc-200/90 font-sans">需要做什么</div>
                         <div className="mt-2 space-y-1 text-zinc-300/90">
-                          <div>1) 在便携版目录右键运行 “01_Install_RawAccel_Driver.exe”</div>
+                          <div>1) 在便携版目录右键运行 “Install_RawAccel_Driver.exe”</div>
                           <div>2) 安装后重启电脑</div>
                           <div>3) 重启后再打开本软件</div>
                         </div>
@@ -1994,56 +2096,61 @@ export default function App() {
          </AnimatePresence>
 
          {/* 常驻驱动提示胶囊（上拉关闭，点击打开详情） */}
-         <AnimatePresence>
-           {driverNoticeVisible && (
-             <motion.div
-               key="driver-notice-pill"
+          <AnimatePresence>
+            {driverNoticeVisible && (
+              <motion.div
+                key="driver-notice-pill"
                 initial={{ opacity: 0, scale: 0.96 }}
                 animate={{ opacity: 1, scale: 1 }}
                 exit={{ opacity: 0, scale: 0.96 }}
                 transition={{ type: "spring", stiffness: 500, damping: 35 }}
-                className="absolute top-4 left-0 w-full flex justify-center z-[410]"
-                style={{ y: driverNoticePillY }}
-                drag="y"
-                dragConstraints={{ top: -80, bottom: 0 }}
-                dragMomentum={false}
-                dragElastic={0}
-                onDragStart={() => {
-                  driverPillDragging.current = true;
-                }}
-                onDragEnd={(_, info) => {
-                  const shouldDismiss = info.offset.y < -32 || info.velocity.y < -700;
-                  if (shouldDismiss) {
-                    driverPillDragging.current = false;
-                    setDriverNoticePillDismissed(true);
-                    return;
-                  }
-                  animate(driverNoticePillY, 0, {
-                    type: "spring",
-                    stiffness: 500,
-                    damping: 35,
-                  });
-                  window.setTimeout(() => {
-                    driverPillDragging.current = false;
-                  }, 0);
-                }}
-               onClick={() => {
-                 if (driverPillDragging.current) return;
-                 setFullScreenStatus('DRIVER_MISSING');
-               }}
-               data-no-drag
-             >
-               <div className="bg-amber-950/80 backdrop-blur-md border border-amber-500/20 text-amber-200 pl-1 pr-3 py-1 rounded-full shadow-[0_4px_20px_rgba(245,158,11,0.18)] flex items-center gap-2 whitespace-nowrap">
-                 <div className="w-6 h-6 rounded-full bg-amber-500/20 flex items-center justify-center shrink-0">
-                   <AlertCircle size={14} className="text-amber-400" />
-                 </div>
-                <span className="text-[10px] font-bold tracking-widest opacity-90">
-                  未检测到驱动
-                </span>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
+                className="absolute top-4 left-0 w-full flex justify-center z-[410] pointer-events-none"
+                style={{ y: driverNoticePillStackOffset }}
+              >
+                <motion.div
+                  className="pointer-events-auto cursor-pointer"
+                  style={{ y: driverNoticePillY }}
+                  drag="y"
+                  dragConstraints={{ top: -80, bottom: 0 }}
+                  dragMomentum={false}
+                  dragElastic={0}
+                  onDragStart={() => {
+                    driverPillDragging.current = true;
+                  }}
+                  onDragEnd={(_, info) => {
+                    const shouldDismiss = info.offset.y < -32 || info.velocity.y < -700;
+                    if (shouldDismiss) {
+                      driverPillDragging.current = false;
+                      setDriverNoticePillDismissed(true);
+                      return;
+                    }
+                    animate(driverNoticePillY, 0, {
+                      type: "spring",
+                      stiffness: 500,
+                      damping: 35,
+                    });
+                    window.setTimeout(() => {
+                      driverPillDragging.current = false;
+                    }, 0);
+                  }}
+                  onClick={() => {
+                    if (driverPillDragging.current) return;
+                    setFullScreenStatus('DRIVER_MISSING');
+                  }}
+                  data-no-drag
+                >
+                  <div className="bg-amber-950/80 backdrop-blur-md border border-amber-500/20 text-amber-200 pl-1 pr-3 py-1 rounded-full shadow-[0_4px_20px_rgba(245,158,11,0.18)] flex items-center gap-2 whitespace-nowrap">
+                    <div className="w-6 h-6 rounded-full bg-amber-500/20 flex items-center justify-center shrink-0">
+                      <AlertCircle size={14} className="text-amber-400" />
+                    </div>
+                    <span className="text-[10px] font-bold tracking-widest opacity-90">
+                      未检测到驱动
+                    </span>
+                  </div>
+                </motion.div>
+              </motion.div>
+            )}
+          </AnimatePresence>
 
          {/* 顶部通知列表 */}
           <div className="absolute top-8 left-0 w-full flex justify-center z-[400] pointer-events-none">
@@ -2082,7 +2189,7 @@ export default function App() {
                             initial={{ opacity: 0, y: -20, scale: 0.8 }}
                             animate={{ 
                                 opacity: 1, 
-                                y: index * 42, 
+                                 y: index * NOTIFICATION_STACK_STEP, 
                                 scale: 1, 
                                 zIndex: 100 - index 
                             }}
@@ -2122,13 +2229,23 @@ export default function App() {
                  top: contextMenu.y,
                  boxShadow: "inset 0 0 24px rgba(0,0,0,0.45), 0 10px 24px rgba(0,0,0,0.35)",
                }}
-               className="absolute z-[500] w-56 rounded-xl border border-white/10 bg-zinc-900/65 backdrop-blur-md p-1 font-sans"
-             >
-               <button
-                 data-no-drag
-                 className="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-white/5 text-[12px] font-medium tracking-[0.04em] text-zinc-200"
-                 onClick={() => {
-                   if (sensitivity !== 1.0) {
+                className="absolute z-[500] w-56 rounded-xl border border-white/10 bg-zinc-900/65 backdrop-blur-md p-1 font-sans"
+              >
+                <button
+                  data-no-drag
+                  className="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-white/5 text-[12px] font-medium tracking-[0.04em] text-zinc-200"
+                  onClick={requestUnbindMouse}
+                >
+                  <Mouse size={14} className="text-red-400/80" />
+                  <span className="flex-1 text-left">解绑鼠标</span>
+                  <span className="ml-auto text-[10px] text-red-300/80 tracking-[0.1em]">Caps x2</span>
+                </button>
+
+                <button
+                  data-no-drag
+                  className="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-white/5 text-[12px] font-medium tracking-[0.04em] text-zinc-200"
+                  onClick={() => {
+                    if (sensitivity !== 1.0) {
                      setSensitivity(1.0);
                    } else {
                      triggerResetPulse();
@@ -2193,17 +2310,7 @@ export default function App() {
                   <span className={`text-zinc-500 ${isCrosshairActive ? 'text-amber-400' : ''}`}>{isCrosshairActive ? '开' : '关'}</span>
                 </button>
 
-               <button
-                 data-no-drag
-                 className="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-white/5 text-[12px] font-medium tracking-[0.04em] text-zinc-200"
-                 onClick={requestUnbindMouse}
-               >
-                 <Mouse size={14} className="text-red-400/80" />
-                 <span className="flex-1 text-left">解绑鼠标</span>
-                 <span className="ml-auto text-[10px] text-red-300/80 tracking-[0.1em]">Caps x2</span>
-               </button>
-
-               <div className="my-1 h-px bg-white/10" />
+                <div className="my-1 h-px bg-white/10" />
 
                <button
                  data-no-drag

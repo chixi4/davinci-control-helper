@@ -55,11 +55,11 @@ After the build, the script copies `mouse_monitor.exe`, `writer.exe`, `wrapper.d
 
 It also produces a clean portable folder:
 
-- `dist-portable/RawAccel Monitor/`
+- `dist-portable/达芬奇控制助手/`
 
 Run:
 
-- `dist-portable/RawAccel Monitor/RawAccel Monitor.exe`
+- `dist-portable/达芬奇控制助手/达芬奇控制助手.exe`
 
 If you want installer bundles instead, run:
 
@@ -73,7 +73,7 @@ This setup is **portable**: at runtime the GUI looks for `mouse_monitor.exe` in 
 
 So when you run the built app from a folder, keep these together:
 
-- `RawAccel Monitor.exe` (the Tauri app)
+- `达芬奇控制助手.exe` (the Tauri app)
 - `backend/mouse_monitor.exe`
 - `backend/writer.exe`
 - `backend/wrapper.dll`
@@ -81,8 +81,8 @@ So when you run the built app from a folder, keep these together:
 
 Optional (for installing/uninstalling the RawAccel driver on a new PC):
 
-- `01_Install_RawAccel_Driver.exe`
-- `02_Uninstall_RawAccel_Driver.exe`
+- `Install_RawAccel_Driver.exe`
+- `Uninstall_RawAccel_Driver.exe`
 - `driver/rawaccel.sys`
 
 ## IPC protocol (debug)
