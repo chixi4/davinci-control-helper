@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { spawn } from 'node:child_process';
 
 const repoRoot = process.cwd();
 const targetDir = path.join(repoRoot, 'src-tauri', 'target', 'release');
@@ -35,6 +36,23 @@ async function tryReadJson(p) {
   } catch {
     return null;
   }
+}
+
+function psQuote(value) {
+  const safe = String(value).replace(/`/g, '``').replace(/"/g, '`"');
+  return `"${safe}"`;
+}
+
+async function runPowerShell(command) {
+  return new Promise((resolve, reject) => {
+    const child = spawn('powershell.exe', ['-NoProfile', '-Command', command], {
+      stdio: 'inherit',
+    });
+    child.on('exit', (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`powershell exited with code ${code}`));
+    });
+  });
 }
 
 async function main() {
@@ -87,6 +105,10 @@ async function main() {
   const productExeName = tauriConf?.package?.productName
     ? `${tauriConf.package.productName}.exe`
     : null;
+  const productName = tauriConf?.package?.productName || 'app';
+  const packageJson = await tryReadJson(path.join(repoRoot, 'package.json'));
+  const version = packageJson?.version || tauriConf?.package?.version || '0.0.0';
+  const versionTag = String(version).startsWith('v') ? version : `v${version}`;
 
   const productExePath = productExeName ? path.join(targetDir, productExeName) : null;
 
@@ -108,7 +130,7 @@ async function main() {
   const appExeName = productExeName || exeCandidates[0]?.name;
 
   const portableRoot = path.join(repoRoot, 'dist-portable');
-  const portableDir = path.join(portableRoot, '达芬奇控制助手');
+  const portableDir = path.join(portableRoot, productName);
   const portableBackendDir = path.join(portableDir, 'backend');
   const portableDriverDir = path.join(portableDir, 'driver');
   await ensureDir(portableDir);
@@ -155,7 +177,7 @@ async function main() {
   if (appExeName) {
     const readmePath = path.join(portableDir, 'README-使用说明.txt');
     const readme = [
-      '达芬奇控制助手 便携版',
+      `${productName} 便携版`,
       '',
       '首次在新电脑使用：',
       `1) 右键运行 "Install_RawAccel_Driver.exe"（以管理员身份运行）`,
@@ -176,6 +198,22 @@ async function main() {
       '',
     ].join('\r\n');
     await fs.writeFile(readmePath, readme, 'utf8');
+  }
+
+  // Avoid shipping UI state that auto-enables features from a previous run.
+  await fs.rm(path.join(portableDir, 'ui_state.json'), { force: true }).catch(() => {});
+
+  // Create a versioned zip next to the portable folder.
+  if (process.platform === 'win32') {
+    const zipName = `${productName}_${versionTag}.zip`;
+    const zipPath = path.join(portableRoot, zipName);
+    const command = `Compress-Archive -Path ${psQuote(portableDir)} -DestinationPath ${psQuote(zipPath)} -Force`;
+    try {
+      await runPowerShell(command);
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.warn(`[portable] Failed to create zip: ${e?.message || e}`);
+    }
   }
 
   // eslint-disable-next-line no-console
