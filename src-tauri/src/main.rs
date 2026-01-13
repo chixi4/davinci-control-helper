@@ -67,7 +67,7 @@ fn to_wide_null_terminated(s: &str) -> Vec<u16> {
 
 #[cfg(target_os = "windows")]
 fn try_focus_existing_window() {
-  let title = to_wide_null_terminated("RawAccel Monitor");
+  let title = to_wide_null_terminated("达芬奇控制助手");
   unsafe {
     let hwnd = FindWindowW(std::ptr::null(), title.as_ptr());
     if !hwnd.is_null() {
@@ -79,7 +79,7 @@ fn try_focus_existing_window() {
 
 #[cfg(target_os = "windows")]
 fn ensure_single_instance() -> Result<SingleInstanceGuard, ()> {
-  let mutex_name = to_wide_null_terminated("Local\\RawAccelMonitorGui_SingleInstance");
+  let mutex_name = to_wide_null_terminated("Local\\DavinciControlHelper_SingleInstance");
 
   unsafe {
     let handle = CreateMutexW(std::ptr::null(), 1, mutex_name.as_ptr());

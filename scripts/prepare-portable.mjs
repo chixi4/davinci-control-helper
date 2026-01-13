@@ -108,7 +108,7 @@ async function main() {
   const appExeName = productExeName || exeCandidates[0]?.name;
 
   const portableRoot = path.join(repoRoot, 'dist-portable');
-  const portableDir = path.join(portableRoot, 'RawAccel Monitor');
+  const portableDir = path.join(portableRoot, '达芬奇控制助手');
   const portableBackendDir = path.join(portableDir, 'backend');
   const portableDriverDir = path.join(portableDir, 'driver');
   await ensureDir(portableDir);
@@ -122,8 +122,8 @@ async function main() {
     { src: appExe, dest: appExeName },
 
     // RawAccel driver install/uninstall helpers (optional but recommended).
-    { src: path.join(repoRoot, '_archive', 'installer.exe'), dest: '01_Install_RawAccel_Driver.exe', optional: true },
-    { src: path.join(repoRoot, '_archive', 'uninstaller.exe'), dest: '02_Uninstall_RawAccel_Driver.exe', optional: true },
+    { src: path.join(repoRoot, '_archive', 'installer.exe'), dest: 'Install_RawAccel_Driver.exe', optional: true },
+    { src: path.join(repoRoot, '_archive', 'uninstaller.exe'), dest: 'Uninstall_RawAccel_Driver.exe', optional: true },
     { src: path.join(repoRoot, 'driver', 'rawaccel.sys'), dest: path.join('driver', 'rawaccel.sys'), optional: true },
 
     // Backend runtime (kept in a subfolder to avoid users clicking the wrong exe).
@@ -155,17 +155,17 @@ async function main() {
   if (appExeName) {
     const readmePath = path.join(portableDir, 'README-使用说明.txt');
     const readme = [
-      'RawAccel Monitor 便携版',
+      '达芬奇控制助手 便携版',
       '',
       '首次在新电脑使用：',
-      `1) 右键运行 "01_Install_RawAccel_Driver.exe"（以管理员身份运行）`,
+      `1) 右键运行 "Install_RawAccel_Driver.exe"（以管理员身份运行）`,
       '2) 重启电脑（驱动安装/卸载通常需要重启生效）',
       '',
       '启动：',
       `- 双击 "${appExeName}"`,
       '',
       '卸载驱动：',
-      `1) 右键运行 "02_Uninstall_RawAccel_Driver.exe"（以管理员身份运行）`,
+      `1) 右键运行 "Uninstall_RawAccel_Driver.exe"（以管理员身份运行）`,
       '2) 重启电脑',
       '',
       '注意：',
